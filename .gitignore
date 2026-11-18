@@ -1,0 +1,13 @@
+node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
+.env
+.runtime/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+release/
+test-results/

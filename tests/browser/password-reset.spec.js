@@ -1,0 +1,31 @@
+import { test, expect } from '@playwright/test';
+import { randomInt } from 'node:crypto';
+import { smsCode } from './sms-fixture.mjs';
+
+test('忘记密码通过短信设置新密码，旧会话和验证码随即失效', async ({ page, request }) => {
+  await page.goto('/');
+  const origin = new URL(page.url()).origin;
+  const headers = { Origin: origin };
+  const phone = '188' + String(randomInt(100000000)).padStart(8, '0');
+  const password = 'Old-Reset-Password-2026!';
+  const newPassword = 'New-Reset-Password-2026!';
+  const registered = await request.post('/api/auth/register', { headers, data: { phone, password, name: '重置密码测试', smsCode: smsCode(phone) } });
+  expect(registered.status()).toBe(201);
+  const me = (await registered.json()).data;
+  await page.getByRole('button', { name: '忘记密码？' }).click();
+  await page.getByLabel('手机号', { exact: true }).fill(phone);
+  await page.getByRole('button', { name: '获取验证码' }).click();
+  await expect(page.getByRole('img', { name: '短信发送前的图形验证码' })).toBeVisible();
+  const code = smsCode(phone, 'reset_password', `${me.id}:1`);
+  await page.getByLabel('短信验证码', { exact: true }).fill(code);
+  await page.getByLabel('新密码', { exact: true }).fill(newPassword);
+  await page.getByLabel('确认新密码', { exact: true }).fill(newPassword);
+  await page.getByRole('button', { name: '重置密码', exact: true }).click();
+  await expect(page.getByRole('button', { name: '登录小家' })).toBeVisible();
+  expect((await request.get('/api/auth/me')).status()).toBe(401);
+  expect((await request.post('/api/auth/login', { headers, data: { phone, password } })).status()).toBe(401);
+  expect((await request.post('/api/auth/password/reset', { headers, data: { phone, newPassword, smsCode: code } })).status()).toBe(400);
+  await page.getByLabel('密码', { exact: true }).fill(newPassword);
+  await page.getByRole('button', { name: '登录小家' }).click();
+  await expect(page.getByRole('heading', { name: '生活有数，心里有底' })).toBeVisible();
+});
