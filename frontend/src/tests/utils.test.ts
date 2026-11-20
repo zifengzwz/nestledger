@@ -46,5 +46,8 @@ describe("visible permission controls", () => {
     expect(canEdit(record, book, "owner")).toBe(true);
     expect(canEdit(record, book, "creator")).toBe(true);
     expect(canEdit(record, book, "member")).toBe(false);
+    expect(
+      canEdit(record, { ...book, readOnly: true }, "creator"),
+    ).toBe(false);
   });
 });

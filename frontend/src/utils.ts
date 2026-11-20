@@ -45,19 +45,13 @@ export function nextDayISO(day: string) {
     new Date(isoShanghai(day)).getTime() + 86400000,
   ).toISOString();
 }
-export const recordDate = (value: string) =>
-  new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(new Date(value));
+export const recordDate = (value: string) => shanghaiDay(new Date(value));
 export const canManage = (book: Book | undefined, userId: string) =>
   Boolean(book && book.ownerId === userId);
 export const canEdit = (
   record: LedgerRecord,
   book: Book | undefined,
   userId: string,
-) => record.createdBy === userId || canManage(book, userId);
+) =>
+  Boolean(book && !book.readOnly) &&
+  (record.createdBy === userId || canManage(book, userId));

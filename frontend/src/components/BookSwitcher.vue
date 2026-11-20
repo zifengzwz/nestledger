@@ -66,6 +66,16 @@ const list = ref<HTMLElement>();
 function select(book: Book) {
   emit("update:modelValue", book.id);
 }
+function bookTitle(book: Book) {
+  const kind = book.readOnly
+    ? "只读分享"
+    : book.type === "family"
+      ? "家庭"
+      : "个人";
+  return book.readOnly && book.ownerPhone
+    ? `${book.name} · ${kind} · ${book.ownerPhone}`
+    : `${book.name} · ${kind}`;
+}
 function reveal(option?: HTMLElement | null) {
   const container = list.value;
   if (!container || !option || !container.clientHeight) return;
@@ -183,7 +193,7 @@ watch(
           type="button"
           role="option"
           :aria-selected="book.id === modelValue"
-          :title="`${book.name} · ${book.type === 'family' ? '家庭' : '个人'}`"
+          :title="bookTitle(book)"
           :tabindex="
             book.id === modelValue || (!modelValue && index === 0) ? 0 : -1
           "
@@ -194,9 +204,17 @@ watch(
             :is="book.type === 'family' ? Users : BookOpen"
             :size="17"
           />
-          <span class="book-name">{{ book.name }}</span>
+          <span class="book-copy">
+            <span class="book-name">{{ book.name }}</span>
+            <small
+              v-if="book.readOnly && book.ownerPhone"
+              class="book-owner"
+              :title="`分享者：${book.ownerName || '对方'}（${book.ownerPhone}）`"
+              >{{ book.ownerName || "对方" }} · {{ book.ownerPhone }}</small
+            >
+          </span>
           <span class="book-kind">{{
-            book.type === "family" ? "家庭" : "个人"
+            book.readOnly ? "只读" : book.type === "family" ? "家庭" : "个人"
           }}</span>
           <Check
             v-if="book.id === modelValue"
@@ -343,6 +361,24 @@ watch(
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13.5px;
+}
+.book-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+.book-copy .book-name {
+  flex: 0 1 auto;
+}
+.book-owner {
+  font-size: 10px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .book-kind {
   flex-shrink: 0;

@@ -62,6 +62,7 @@ function setup(authenticated = true) {
     if (path === "/api/auth/me" || path === "/api/auth/login") data = user;
     else if (path === "/api/books") data = [book];
     else if (path === "/api/invitations") data = [];
+    else if (path === "/api/shares") data = [];
     else if (path === "/api/record-options") data = recordOptions;
     else if (path.includes("/analysis?")) data = analysis;
     else if (path.includes("/records?"))
@@ -295,8 +296,8 @@ describe("application integrated API flows", () => {
     await add!.trigger("click");
     await wrapper.get('[aria-label="金额（元）"]').setValue("0.29");
     await wrapper
-      .get('input[type="datetime-local"]')
-      .setValue("2026-11-16T19:30");
+      .get('[role="dialog"] input[type="date"]')
+      .setValue("2026-11-16");
     await wrapper.get('[role="dialog"] form').trigger("submit");
     await flushPromises();
     const call = fetch.mock.calls.find(
@@ -305,7 +306,7 @@ describe("application integrated API flows", () => {
     );
     expect(JSON.parse(String(call?.[1].body))).toMatchObject({
       amountCents: 29,
-      occurredAt: "2026-11-16T11:30:00.000Z",
+      occurredAt: "2026-11-15T16:00:00.000Z",
       category: "餐饮美食",
       type: "expense",
     });
@@ -321,19 +322,20 @@ describe("application integrated API flows", () => {
       .trigger("click");
     await flushPromises();
     let count = 0;
-    transport.mockImplementation(
-      async () =>
-        new Response(
-          JSON.stringify({
-            error: { code: "SERVER_ERROR", message: `请求错误 ${++count}` },
-          }),
-          { status: 500 },
-        ),
+    transport.mockImplementation(async (path) =>
+      path === "/api/shares"
+        ? new Response(JSON.stringify({ data: [] }))
+        : new Response(
+            JSON.stringify({
+              error: { code: "SERVER_ERROR", message: `请求错误 ${++count}` },
+            }),
+            { status: 500 },
+          ),
     );
     for (let i = 0; i < 5; i++) {
       await wrapper
         .findAll("button")
-        .find((button) => button.text() === "刷新邀请")!
+        .find((button) => button.text() === "刷新")!
         .trigger("click");
       await flushPromises();
     }
@@ -547,6 +549,173 @@ describe("application integrated API flows", () => {
     expect(wrapper.find('input[type="tel"]').exists()).toBe(true);
   });
 
+  it("opens the share dialog for the owner and shows recipients", async () => {
+    const transport = setup();
+    const base = transport.getMockImplementation()!;
+    transport.mockImplementation(async (path, options) =>
+      path === "/api/books/b1/shares"
+        ? new Response(
+            JSON.stringify({ data: { ownerId: "u1", shares: [] } }),
+          )
+        : base(path, options),
+    );
+    wrapper = mount(App, { attachTo: document.body });
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("分享账本"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("分享账本给指定用户");
+    expect(wrapper.text()).toContain("已分享的用户");
+    expect(wrapper.text()).toContain("还没有分享给任何人");
+  });
+  it("renders a book shared to this account as read-only", async () => {
+    const transport = setup();
+    const base = transport.getMockImplementation()!;
+    const shared = {
+      ...book,
+      id: "shared-1",
+      name: "家人分享的账本",
+      ownerId: "u2",
+      memberIds: ["u2"],
+      readOnly: true,
+      ownerName: "小满",
+      ownerPhone: "13900000002",
+    };
+    transport.mockImplementation(async (path, options) =>
+      path === "/api/books"
+        ? new Response(JSON.stringify({ data: [shared] }))
+        : base(path, options),
+    );
+    wrapper = mount(App, { attachTo: document.body });
+    await flushPromises();
+    expect(wrapper.get(".book-kind").text()).toBe("只读");
+    expect(wrapper.text()).toContain("来自 13900000002 的只读账本");
+    expect(wrapper.text()).toContain("只读账本");
+    expect(wrapper.text()).toContain("13900000002");
+    expect(wrapper.get(".book-owner").text()).toContain("13900000002");
+    for (const label of ["记一笔", "导出账本", "导入账本", "分享账本", "邀请家人"])
+      expect(
+        wrapper.findAll("button").some((button) => button.text().includes(label)),
+      ).toBe(false);
+    expect(
+      transport.mock.calls.some((call) => call[0].includes("/records?")),
+    ).toBe(true);
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("账本管理"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("只读访客");
+    expect(wrapper.text()).toContain("账本拥有者可以随时取消分享");
+    expect(
+      transport.mock.calls.some(
+        (call) => call[0] === "/api/books/shared-1/members",
+      ),
+    ).toBe(false);
+  });
+  it("accepts a pending read-only share and opens the shared book", async () => {
+    const transport = setup();
+    const base = transport.getMockImplementation()!;
+    const share = {
+      id: "s1",
+      bookId: "shared-1",
+      bookName: "共享的账本",
+      ownerName: "小满",
+      ownerPhone: "13900000002",
+      createdAt: "2026-11-16T00:00:00Z",
+    };
+    const sharedBook = {
+      ...book,
+      id: "shared-1",
+      name: "共享的账本",
+      ownerId: "u2",
+      memberIds: ["u2"],
+      readOnly: true,
+      ownerName: "小满",
+      ownerPhone: "13900000002",
+    };
+    let accepted = false;
+    transport.mockImplementation(async (path, options) => {
+      if (path === "/api/shares")
+        return new Response(
+          JSON.stringify({ data: accepted ? [] : [share] }),
+        );
+      if (path === "/api/shares/s1/accept") {
+        accepted = true;
+        return new Response(JSON.stringify({ data: sharedBook }));
+      }
+      if (path === "/api/books")
+        return new Response(
+          JSON.stringify({ data: accepted ? [sharedBook] : [] }),
+        );
+      return base(path, options);
+    });
+    wrapper = mount(App, { attachTo: document.body });
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的邀请"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("分享给我的账本");
+    expect(wrapper.text()).toContain("13900000002");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("接受分享"))!
+      .trigger("click");
+    await flushPromises();
+    expect(
+      transport.mock.calls.some((call) => call[0] === "/api/shares/s1/accept"),
+    ).toBe(true);
+    expect(wrapper.text()).toContain("共享的账本");
+    expect(wrapper.text()).toContain("来自 13900000002 的只读账本");
+    expect(wrapper.text()).toContain("已接受只读分享");
+  });
+  it("rejects a pending read-only share after confirmation", async () => {
+    const transport = setup();
+    const base = transport.getMockImplementation()!;
+    const share = {
+      id: "s2",
+      bookId: "shared-2",
+      bookName: "待拒绝的账本",
+      ownerName: "小满",
+      ownerPhone: "13900000003",
+      createdAt: "2026-11-16T00:00:00Z",
+    };
+    let shares = [share];
+    transport.mockImplementation(async (path, options) => {
+      if (path === "/api/shares")
+        return new Response(JSON.stringify({ data: shares }));
+      if (path === "/api/shares/s2/reject") {
+        shares = [];
+        return new Response(JSON.stringify({ data: { ok: true } }));
+      }
+      return base(path, options);
+    });
+    wrapper = mount(App, { attachTo: document.body });
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("我的邀请"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "拒绝")!
+      .trigger("click");
+    await wrapper
+      .get('[role="dialog"] .modal-actions button:last-child')
+      .trigger("click");
+    await flushPromises();
+    expect(
+      transport.mock.calls.some((call) => call[0] === "/api/shares/s2/reject"),
+    ).toBe(true);
+    expect(wrapper.text()).toContain("已拒绝分享");
+    expect(wrapper.text()).not.toContain("待拒绝的账本");
+  });
   it("applies the account theme and saves a newly chosen one", async () => {
     const transport = setup();
     const base = transport.getMockImplementation()!;

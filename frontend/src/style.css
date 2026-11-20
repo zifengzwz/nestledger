@@ -1688,6 +1688,20 @@ tbody tr:last-child td {
 .invitation-info {
   margin-bottom: 24px;
 }
+.invitation-group {
+  margin-bottom: 28px;
+}
+.invitation-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  margin: 0 0 12px;
+  color: var(--text-strong);
+}
+.invitation-group-title > svg {
+  color: var(--accent-strong);
+}
 .invitation-card {
   display: flex;
   align-items: center;

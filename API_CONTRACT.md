@@ -23,7 +23,7 @@ User `{id,phone,name,createdAt,theme}`. `theme` defaults to `clay` for users wit
 - DELETE /books/:id -> `{ok:true}` (owner; delete records and invitations too)
 - GET /books/:id/members -> `{ownerId,members:[user]}`
 - DELETE /books/:id/members/:userId -> `{ok:true}` (owner can remove member; member may remove self; owner cannot leave)
-Book `{id,name,type,ownerId,memberIds:[string],createdAt}`. Personal owner only; family owner/member. Invitations only owner.
+Book `{id,name,type,ownerId,memberIds:[string],createdAt,readOnly:boolean,ownerName?:string,ownerPhone?:string}`. `readOnly` is true when the book was shared to the current account, which may then only view it; `ownerName`/`ownerPhone` identify the original owner to that recipient and are omitted for books the account owns or belongs to. Personal owner only (unless explicitly shared read-only); family owner/member. Invitations only owner.
 
 ## Invitations
 - GET /invitations -> invitation[] pending to current phone
@@ -31,6 +31,17 @@ Book `{id,name,type,ownerId,memberIds:[string],createdAt}`. Personal owner only;
 - POST /invitations/:id/accept -> book (phone matches)
 - POST /invitations/:id/reject -> `{ok:true}`
 Invitation `{id,bookId,bookName,inviterName,phone,status,createdAt}`. Prevent duplicate pending invites, owner/self/already-member invitations. Check identity again on accepting.
+
+## Book sharing (read-only)
+Sharing is an invitation: the book owner sends it to a registered phone, and the recipient must accept before gaining read-only access.
+- POST /books/:id/shares `{phone}` -> share (HTTP 201 for a new invitation, 200 when re-sending a previously rejected one). Owner only. The phone must belong to an existing registered account; an unregistered phone returns 404 `USER_NOT_REGISTERED` and creates nothing. Sharing with yourself, sharing with a current owner/member, or sharing with a user whose invitation is still pending or already accepted returns 409 `CONFLICT`. Personal and family books can both be shared.
+- GET /books/:id/shares -> `{ownerId,shares:[share]}` (owner only; includes pending, accepted and rejected rows).
+- DELETE /books/:id/shares/:userId -> `{ok:true}` (owner only; 404 if that user is not currently shared). Pending or accepted access is removed immediately.
+- GET /shares -> pending share invitations for the current account, newest first.
+- POST /shares/:id/accept -> book (the recipient’s read-only book view, with `ownerName`/`ownerPhone`). Only the invited account may respond; a pending row is required.
+- POST /shares/:id/reject -> `{ok:true}`. Only the invited account may respond; a pending row is required. The owner may send the invitation again afterwards.
+Owner view share `{id,userId,name,phone,status:"pending"|"accepted"|"rejected",createdAt}`. Received share `{id,bookId,bookName,ownerName,ownerPhone,createdAt}`.
+Only books whose share is accepted (or legacy share rows created before statuses existed) appear in the recipient's GET /books, with `readOnly:true` plus `ownerName`/`ownerPhone` so the recipient can tell whose ledger it is (the owner’s own view has `readOnly:false` and omits those fields). Pending and rejected shares grant no access at all. A read-only recipient may view records and analysis and may include the book in their own `PATCH /books/order`, but cannot create/edit/delete records, rename/delete the book, manage members or invitations, export, or import. Revoking the share or deleting the book removes access; deleting a book also deletes its shares, and accepting a family invitation removes any earlier read-only share for that user. Share relationships live in MongoDB collection `bookShares` (unique per book+user) and are not cached in Redis.
 
 ## Record options
 - GET /record-options -> `{expenseCategories:[string],incomeCategories:[string],paymentSources:[string],icons:{expenseCategory:{"custom name":"icon-id"},incomeCategory:{...},paymentSource:{...}}}` inside `{data:...}`. Requires login. The original three string arrays remain unchanged: defaults in the order below, then the current account's custom names in insertion order. Icon maps include custom options only, with `{}` (never `[]`) for kinds without custom options; legacy custom options without icon metadata fall back to `tag` / `coins` / `wallet` for expense / income / payment respectively.

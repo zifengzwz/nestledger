@@ -19,6 +19,7 @@ import {
   Plus,
   Search,
   Settings,
+  Share2,
   Trash2,
   TrendingUp,
   Users,
@@ -31,6 +32,7 @@ import {
   type User,
   type Book,
   type Invitation,
+  type ReceivedBookShare,
   type LedgerRecord,
   type RecordPage,
   type Analysis,
@@ -41,7 +43,6 @@ import {
   money,
   toCents,
   shanghaiDay,
-  localDateTime,
   isoShanghai,
   nextDayISO,
   recordDate,
@@ -59,6 +60,8 @@ import { applyTheme, readStoredTheme, storeTheme, type ThemeId } from "./theme";
 import { iconById, type OptionIconKind } from "./optionIcons";
 import BookSwitcher from "./components/BookSwitcher.vue";
 import DataTransfer from "./components/DataTransfer.vue";
+import ShareBookDialog from "./components/ShareBookDialog.vue";
+const shareDialogBookId = ref("");
 const transferMode = ref<"" | "import" | "export">("");
 async function importedRecords(id: string, count: number) {
   if (id !== bookId.value) return;
@@ -74,6 +77,7 @@ const auth = ref({ phone: "", password: "", name: "" }),
   authError = ref("");
 const books = ref<Book[]>([]),
   invitations = ref<Invitation[]>([]),
+  receivedShares = ref<ReceivedBookShare[]>([]),
   bookId = ref(""),
   view = ref("overview"),
   mobileMenu = ref(false);
@@ -83,11 +87,22 @@ const activeBook = computed(() =>
 const isOwner = computed(() =>
   canManage(activeBook.value, user.value?.id || ""),
 );
+const readOnlyBook = computed(() => activeBook.value?.readOnly === true);
+const inboxCount = computed(
+  () => invitations.value.length + receivedShares.value.length,
+);
+const shareDialogBook = computed(() =>
+  books.value.find((b) => b.id === shareDialogBookId.value),
+);
 const inviteError = ref("");
 const canInviteMembers = computed(
-  () => activeBook.value?.type === "family" && isOwner.value,
+  () =>
+    activeBook.value?.type === "family" &&
+    isOwner.value &&
+    !readOnlyBook.value,
 );
 async function openInvite() {
+  if (!canInviteMembers.value) return;
   inviteError.value = "";
   navigate("members");
   await nextTick();
@@ -118,7 +133,7 @@ const recordForm = ref({
   type: "expense",
   amount: "",
   category: "餐饮美食",
-  occurredAt: localDateTime(),
+  occurredAt: shanghaiDay(),
   note: "",
   paymentSource: "微信",
 });
@@ -329,6 +344,7 @@ function failure(error: unknown) {
     user.value = null;
     clearRecordOptions();
     books.value = [];
+    receivedShares.value = [];
     bookId.value = "";
     modal.value = "";
     transferMode.value = "";
@@ -387,13 +403,31 @@ async function saveBookOrder(bookIds: string[]) {
 async function loadInvitations() {
   invitations.value = await api<Invitation[]>("/invitations");
 }
+async function loadReceivedShares() {
+  receivedShares.value = await api<ReceivedBookShare[]>("/shares");
+}
+async function refreshInbox() {
+  await Promise.all([loadInvitations(), loadReceivedShares()]);
+}
+async function processShare(share: ReceivedBookShare, accept: boolean) {
+  await api(`/shares/${share.id}/${accept ? "accept" : "reject"}`, "POST");
+  await Promise.all([loadReceivedShares(), loadInvitations(), loadBooks()]);
+  if (accept) {
+    bookId.value = share.bookId;
+    navigate("overview");
+  }
+  toast(accept ? "已接受只读分享，账本已加入列表" : "已拒绝分享");
+}
+async function respondShare(share: ReceivedBookShare, accept: boolean) {
+  await mutate(() => processShare(share, accept));
+}
 async function initialize() {
   booting.value = true;
   bootError.value = "";
   try {
     user.value = await api<User>("/auth/me");
     useTheme(user.value.theme ?? readStoredTheme());
-    await Promise.all([loadBooks(), loadInvitations(), loadRecordOptions()]);
+    await Promise.all([loadBooks(), refreshInbox(), loadRecordOptions()]);
   } catch (error) {
     if (!(error instanceof ApiError && error.status === 401))
       bootError.value = failure(error);
@@ -421,7 +455,7 @@ async function submitAuth() {
       user.value = signedIn;
       useTheme(signedIn.theme ?? readStoredTheme());
       clearRecordOptions();
-      await Promise.all([loadBooks(), loadInvitations(), loadRecordOptions()]);
+      await Promise.all([loadBooks(), refreshInbox(), loadRecordOptions()]);
       toast(
         authMode.value === "login"
           ? "欢迎回来，生活的每一笔都值得记录"
@@ -486,7 +520,12 @@ async function loadAnalysis() {
 async function loadMembers() {
   const id = bookId.value,
     sequence = ++membersRequest;
-  if (!id) return;
+  if (!id || readOnlyBook.value) {
+    members.value = [];
+    membersError.value = "";
+    membersLoading.value = false;
+    return;
+  }
   membersLoading.value = true;
   membersError.value = "";
   try {
@@ -505,7 +544,7 @@ function navigate(target: string) {
   mobileMenu.value = false;
   if (target === "members") void loadMembers();
   if (target === "invitations")
-    void loadInvitations().catch((e) => toast(failure(e), true));
+    void refreshInbox().catch((e) => toast(failure(e), true));
 }
 watch(bookId, () => {
   invitePhone.value = "";
@@ -564,6 +603,7 @@ async function saveBook() {
   });
 }
 function openRecord(record?: LedgerRecord) {
+  if (readOnlyBook.value) return;
   addingOption.value = null;
   void loadRecordOptions().catch((error) => toast(failure(error), true));
   editingRecord.value = record || null;
@@ -572,7 +612,7 @@ function openRecord(record?: LedgerRecord) {
         type: record.type,
         amount: (record.amountCents / 100).toFixed(2),
         category: record.category,
-        occurredAt: localDateTime(new Date(record.occurredAt)),
+        occurredAt: shanghaiDay(new Date(record.occurredAt)),
         note: record.note,
         paymentSource: record.paymentSource,
       }
@@ -580,7 +620,7 @@ function openRecord(record?: LedgerRecord) {
         type: "expense",
         amount: "",
         category: "餐饮美食",
-        occurredAt: localDateTime(),
+        occurredAt: shanghaiDay(),
         note: "",
         paymentSource: "微信",
       };
@@ -588,15 +628,20 @@ function openRecord(record?: LedgerRecord) {
   modal.value = "record";
 }
 async function saveRecord() {
+  if (readOnlyBook.value) return;
   if (addingOption.value) {
     formError.value = "请先完成或取消添加选项";
     return;
   }
   await mutate(async () => {
+    const previous = editingRecord.value;
+    const day = recordForm.value.occurredAt;
     const data = {
       ...recordForm.value,
       amountCents: toCents(recordForm.value.amount),
-      occurredAt: isoShanghai(recordForm.value.occurredAt),
+      occurredAt: previous && shanghaiDay(new Date(previous.occurredAt)) === day
+         ? previous.occurredAt
+         : isoShanghai(day),
     };
     await api(
       `/books/${bookId.value}/records${editingRecord.value ? "/" + editingRecord.value.id : ""}`,
@@ -734,6 +779,7 @@ function logout() {
       user.value = null;
       clearRecordOptions();
       books.value = [];
+      receivedShares.value = [];
       bookId.value = "";
       view.value = "overview";
       toast("已安全退出");
@@ -974,13 +1020,13 @@ onMounted(initialize);
           <Users :size="19" /> 账本管理</button
         ><button
           :class="{ active: view === 'invitations' }"
-          title="账号收到的家庭账本邀请，与当前选择的账本无关"
+          title="账号收到的家庭邀请和账本分享，与当前选择的账本无关"
           @click="navigate('invitations')"
         >
           <Bell :size="19" /> 我的邀请<span
-            v-if="invitations.length"
+            v-if="inboxCount"
             class="badge"
-            >{{ invitations.length }}</span
+            >{{ inboxCount }}</span
           >
         </button>
       </nav>
@@ -1029,7 +1075,7 @@ onMounted(initialize);
             aria-label="查看邀请"
             @click="navigate('invitations')"
           >
-            <Bell :size="19" /><i v-if="invitations.length"></i></button
+            <Bell :size="19" /><i v-if="inboxCount"></i></button
           ><span class="avatar small">{{ user.name.slice(0, 1) }}</span>
         </div>
       </header>
@@ -1058,19 +1104,28 @@ onMounted(initialize);
               <p>
                 {{
                   activeBook
-                    ? `${activeBook.name} · ${activeBook.type === "family" ? "和家人一起，把日子记清楚" : "属于自己的生活账本"}`
+                    ? `${activeBook.name} · ${activeBook.readOnly ? (activeBook.ownerPhone ? "来自 " + activeBook.ownerPhone + " 的只读账本" : "他人分享给你的只读账本") : activeBook.type === "family" ? "和家人一起，把日子记清楚" : "属于自己的生活账本"}`
                     : "创建第一本账本，从今天开始记录美好。"
                 }}
               </p>
             </div>
-            <div v-if="activeBook" class="button-row">
+            <div v-if="activeBook && !readOnlyBook" class="button-row">
               <button
+                v-if="isOwner"
+                class="secondary share-action"
+                @click="shareDialogBookId = activeBook.id"
+              >
+                <Share2 :size="18" /> 分享账本
+              </button>
+              <button
+                v-if="!readOnlyBook"
                 class="secondary transfer-action"
                 @click="transferMode = 'export'"
               >
                 导出账本
               </button>
               <button
+                v-if="!readOnlyBook"
                 class="secondary transfer-action"
                 @click="transferMode = 'import'"
               >
@@ -1083,13 +1138,32 @@ onMounted(initialize);
               >
                 <Users :size="18" /> 邀请家人
               </button>
-              <button class="primary record-action" @click="openRecord()">
+              <button
+                v-if="!readOnlyBook"
+                class="primary record-action"
+                @click="openRecord()"
+              >
                 <Plus :size="18" /> 记一笔
               </button>
             </div>
-            <button v-else class="primary" @click="newBook()">
+            <button
+              v-else-if="!activeBook"
+              class="primary"
+              @click="newBook()"
+            >
               <Plus :size="18" /> 新建账本
             </button>
+          </div>
+          <div v-if="readOnlyBook" class="info-note invitation-info" role="note">
+            <CircleHelp :size="18" />
+            <p>
+              这是
+              <strong>{{ activeBook?.ownerName || "对方" }}</strong
+              ><template v-if="activeBook?.ownerPhone"
+                >（{{ activeBook?.ownerPhone }}）</template
+              >
+              分享给你的<strong>只读账本</strong>。你可以查看全部记录和收支分析，但不能新增、修改、导入或导出。
+            </p>
           </div>
           <div v-if="!activeBook" class="card empty-state large">
             <span class="empty-icon"><BookOpen :size="38" /></span>
@@ -1209,7 +1283,11 @@ onMounted(initialize);
                     </div>
                     <TrendChart :points="analysis.trend" />
                     <p v-if="!analysis.recordCount" class="chart-empty-note">
-                      这个周期还没有记录，记下第一笔吧。
+                      {{
+                        readOnlyBook
+                          ? "这个周期还没有记录。"
+                          : "这个周期还没有记录，记下第一笔吧。"
+                      }}
                     </p>
                     <details class="chart-table">
                       <summary>查看趋势数据表</summary>
@@ -1398,7 +1476,11 @@ onMounted(initialize);
                       : "一顿饭、一份工资，都是记录生活的开始。"
                   }}
                 </p>
-                <button class="secondary" @click="openRecord()">
+                <button
+                  v-if="!readOnlyBook"
+                  class="secondary"
+                  @click="openRecord()"
+                >
                   <Plus :size="16" /> 记下第一笔
                 </button>
               </div>
@@ -1536,6 +1618,37 @@ onMounted(initialize);
             <h2>先创建一本账本吧</h2>
             <button class="primary" @click="newBook()">创建账本</button>
           </div>
+          <section v-else-if="readOnlyBook" class="card management-card">
+            <div class="section-head">
+              <div>
+                <h2>{{ activeBook.name }}</h2>
+                <p>他人分享给你的只读账本</p>
+              </div>
+              <span class="type-pill">只读</span>
+            </div>
+            <div class="management-info">
+              <span>你的角色</span><strong>只读访客</strong>
+            </div>
+            <div v-if="activeBook.ownerPhone" class="management-info">
+              <span>分享者</span
+              ><strong
+                >{{ activeBook.ownerName || "对方" }} ·
+                {{ activeBook.ownerPhone }}</strong
+              >
+            </div>
+            <div class="management-info">
+              <span>创建于</span
+              ><strong>{{
+                shanghaiDay(new Date(activeBook.createdAt))
+              }}</strong>
+            </div>
+            <div class="info-note">
+              <CircleHelp :size="18" />
+              <p>
+                账本拥有者可以随时取消分享。你可以查看记录和收支分析；如需共同记账，请让拥有者邀请你加入家庭账本（个人账本无法共同记账）。
+              </p>
+            </div>
+          </section>
           <template v-else
             ><section class="card management-card">
               <div class="section-head">
@@ -1684,66 +1797,123 @@ onMounted(initialize);
           ><div class="page-heading">
             <div>
               <span class="eyebrow">YOU ARE INVITED HOME</span>
-              <h1>来自家人的邀请</h1>
-              <p>当前手机号 {{ user.phone }} 的待接受邀请</p>
+              <h1>来自家人和朋友的邀请</h1>
+              <p>当前手机号 {{ user.phone }} 的待接受邀请与只读分享</p>
             </div>
             <button
               class="secondary"
               :disabled="busy"
-              @click="mutate(loadInvitations)"
+              @click="mutate(refreshInbox)"
             >
-              刷新邀请
+              刷新
             </button>
           </div>
           <div class="info-note invitation-info">
             <Bell :size="19" />
             <p>
-              这里是当前账号收到的家庭账本邀请，与左侧选择的账本无关。邀请仅在平台内显示，不发送短信。接受后，你将能查看和新增该家庭账本的记录。
+              这里是当前账号收到的家庭账本邀请和只读分享，与左侧选择的账本无关。消息仅在平台内显示，不发送短信；只读分享需要你接受后才能查看。
             </p>
           </div>
-          <div v-if="!invitations.length" class="card empty-state large">
+          <section v-if="receivedShares.length" class="invitation-group">
+            <h2 class="invitation-group-title">
+              <BookOpen :size="18" /> 分享给我的账本
+            </h2>
+            <section
+              v-for="share in receivedShares"
+              :key="share.id"
+              class="card invitation-card"
+            >
+              <span class="empty-icon"><BookOpen :size="26" /></span>
+              <div>
+                <h2>{{ share.bookName }}</h2>
+                <p>
+                  {{ share.ownerName
+                  }}<template v-if="share.ownerPhone"
+                    >（{{ share.ownerPhone }}）</template
+                  >
+                  邀请你只读查看账本
+                </p>
+                <small class="muted"
+                  >{{ shanghaiDay(new Date(share.createdAt)) }} ·
+                  接受后可查看记录和分析，不能修改</small
+                >
+              </div>
+              <div class="button-row">
+                <button
+                  class="secondary"
+                  :disabled="busy"
+                  @click="
+                    confirm(
+                      '拒绝分享？',
+                      `拒绝查看「${share.bookName}」后，对方可再次分享给你。`,
+                      () => processShare(share, false),
+                      '拒绝分享',
+                      false,
+                    )
+                  "
+                >
+                  拒绝</button
+                ><button
+                  class="primary"
+                  :disabled="busy"
+                  @click="respondShare(share, true)"
+                >
+                  <Check :size="17" /> 接受分享
+                </button>
+              </div>
+            </section>
+          </section>
+          <section v-if="invitations.length" class="invitation-group">
+            <h2 class="invitation-group-title">
+              <Users :size="18" /> 家庭账本邀请
+            </h2>
+            <section
+              v-for="invite in invitations"
+              :key="invite.id"
+              class="card invitation-card"
+            >
+              <span class="empty-icon"><Users :size="26" /></span>
+              <div>
+                <h2>{{ invite.bookName }}</h2>
+                <p>{{ invite.inviterName }} 邀请你加入家庭账本</p>
+                <small class="muted"
+                  >{{ shanghaiDay(new Date(invite.createdAt)) }} · 邀请至
+                  {{ invite.phone }}</small
+                >
+              </div>
+              <div class="button-row">
+                <button
+                  class="secondary"
+                  :disabled="busy"
+                  @click="
+                    confirm(
+                      '拒绝邀请？',
+                      `拒绝加入「${invite.bookName}」后，对方可再次邀请你。`,
+                      () => processInvite(invite, false),
+                      '拒绝邀请',
+                      false,
+                    )
+                  "
+                >
+                  拒绝</button
+                ><button
+                  class="primary"
+                  :disabled="busy"
+                  @click="respondInvite(invite, true)"
+                >
+                  <Check :size="17" /> 接受邀请
+                </button>
+              </div>
+            </section>
+          </section>
+          <div
+            v-if="!invitations.length && !receivedShares.length"
+            class="card empty-state large"
+          >
             <span class="empty-icon"><Bell :size="34" /></span>
             <h2>暂时没有新邀请</h2>
-            <p>让家人通过你的手机号邀请你，<br />一起把小家的生活记下来。</p>
-          </div>
-          <section
-            v-for="invite in invitations"
-            :key="invite.id"
-            class="card invitation-card"
-          >
-            <span class="empty-icon"><Users :size="26" /></span>
-            <div>
-              <h2>{{ invite.bookName }}</h2>
-              <p>{{ invite.inviterName }} 邀请你加入家庭账本</p>
-              <small class="muted"
-                >{{ shanghaiDay(new Date(invite.createdAt)) }} · 邀请至
-                {{ invite.phone }}</small
-              >
-            </div>
-            <div class="button-row">
-              <button
-                class="secondary"
-                :disabled="busy"
-                @click="
-                  confirm(
-                    '拒绝邀请？',
-                    `拒绝加入「${invite.bookName}」后，对方可再次邀请你。`,
-                    () => processInvite(invite, false),
-                    '拒绝邀请',
-                    false,
-                  )
-                "
-              >
-                拒绝</button
-              ><button
-                class="primary"
-                :disabled="busy"
-                @click="respondInvite(invite, true)"
-              >
-                <Check :size="17" /> 接受邀请
-              </button>
-            </div>
-          </section></template
+            <p>家人邀请或朋友分享账本后，<br />会显示在这里。</p>
+          </div></template
         >
         <template v-else-if="view === 'account'"
           ><div class="page-heading">
@@ -1856,13 +2026,19 @@ onMounted(initialize);
     </main>
   </div>
   <DataTransfer
-    v-if="transferMode && activeBook && user"
+    v-if="transferMode && activeBook && user && !readOnlyBook"
     :book="activeBook"
     :mode="transferMode"
     @close="transferMode = ''"
     @imported="importedRecords"
     @failure="failure"
     @downloaded="toast"
+  />
+  <ShareBookDialog
+    v-if="shareDialogBook"
+    :book-id="shareDialogBook.id"
+    :book-name="shareDialogBook.name"
+    @close="shareDialogBookId = ''"
   />
   <Modal
     v-if="modal"
@@ -2057,9 +2233,9 @@ onMounted(initialize);
         </div>
       </div>
       <label
-        >发生时间（北京时间）<input
+        >发生日期（北京时间）<input
           v-model="recordForm.occurredAt"
-          type="datetime-local"
+          type="date"
           required /></label
       ><label
         >备注

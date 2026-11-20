@@ -15,6 +15,11 @@ export interface Book {
   ownerId: string;
   memberIds: string[];
   createdAt: string;
+  /** True when the book was shared with this account and can only be viewed. */
+  readOnly?: boolean;
+  /** Original owner shown to read-only recipients so they know whose ledger it is. */
+  ownerName?: string;
+  ownerPhone?: string;
 }
 export interface Invitation {
   id: string;
@@ -23,6 +28,27 @@ export interface Invitation {
   inviterName: string;
   phone: string;
   status: string;
+  createdAt: string;
+}
+export type BookShareStatus = "pending" | "accepted" | "rejected";
+export interface BookShare {
+  id: string;
+  userId: string;
+  name: string;
+  phone: string;
+  status: BookShareStatus;
+  createdAt: string;
+}
+export interface BookShares {
+  ownerId: string;
+  shares: BookShare[];
+}
+export interface ReceivedBookShare {
+  id: string;
+  bookId: string;
+  bookName: string;
+  ownerName: string;
+  ownerPhone: string;
   createdAt: string;
 }
 export interface LedgerRecord {

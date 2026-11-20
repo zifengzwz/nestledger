@@ -96,6 +96,7 @@ function M.indexes()
  local indexes={
   users={{key={phone=1},name='unique_phone',unique=true}},
   books={{key={ownerId=1},name='owner'},{key={memberIds=1},name='members'}},
+  bookShares={{key=bson.ordered({{'bookId',1},{'userId',1}}),name='unique_book_user',unique=true},{key=bson.ordered({{'userId',1},{'createdAt',-1}}),name='recipient'}},
   invitations={{key=bson.ordered({{'bookId',1},{'phone',1}}),name='unique_pending',unique=true,partialFilterExpression={status='pending'}},{key=bson.ordered({{'phone',1},{'status',1}}),name='recipient'}},
   records={{key=bson.ordered({{'bookId',1},{'occurredAt',1}}),name='book_date'},{key=bson.ordered({{'bookId',1},{'createdBy',1}}),name='book_creator'},{key=bson.ordered({{'bookId',1},{'importBatchId',1}}),name='book_import_batch'}},
   importReceipts={{key=bson.ordered({{'userId',1},{'bookId',1},{'requestId',1}}),name='unique_user_book_request',unique=true}}

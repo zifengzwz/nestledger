@@ -14,7 +14,12 @@ local M={}
 local function array(t) return #t==0 and json.empty_array or t end
 local function now() return date.iso(ngx.now()) end
 local function user_out(u) return {id=u._id,phone=u.phone,name=u.name,createdAt=u.createdAt,theme=u.theme or 'clay'} end
-local function book_out(b) return {id=b._id,name=b.name,type=b.type,ownerId=b.ownerId,memberIds=array(b.memberIds or {}),createdAt=b.createdAt} end
+local function book_out(b,read_only,owner)
+ local out={id=b._id,name=b.name,type=b.type,ownerId=b.ownerId,memberIds=array(b.memberIds or {}),createdAt=b.createdAt,readOnly=read_only==true}
+ -- A read-only recipient must be able to tell whose ledger it is.
+ if read_only and owner then out.ownerName=owner.name; out.ownerPhone=owner.phone end
+ return out
+end
 local function invite_out(i) return {id=i._id,bookId=i.bookId,bookName=i.bookName,inviterName=i.inviterName,phone=i.phone,status=i.status,createdAt=i.createdAt} end
 local function record_out(r)
  return {id=r._id,bookId=r.bookId,createdBy=r.createdBy,type=r.type,amountCents=r.amountCents,category=r.category,occurredAt=r.occurredAt,note=r.note,paymentSource=r.paymentSource,createdAt=r.createdAt,updatedAt=r.updatedAt}
@@ -30,10 +35,25 @@ local function auth()
  if not u or s.version~=(u.authVersion or 1) then sessions.destroy(token); v.error(401,'UNAUTHORIZED','登录已失效，请重新登录') end
  return u,token
 end
+local function is_member(b,u) return b.ownerId==u._id or (b.type=='family' and contains(b.memberIds,u._id)) end
+local function share_status(s) return s.status or 'accepted' end
+-- Legacy rows created before accept/reject existed have no status and remain accepted.
+local function accepted_share_filter()
+ return {['$or']=bson.array({{status='accepted'},{status={['$exists']=false}}})}
+end
 local function book_access(id,u,owner)
  v.id(id); local b=db.one('books',{_id=id,deleting={['$ne']=true}}); if not b then missing() end
- if b.ownerId~=u._id and (b.type~='family' or not contains(b.memberIds,u._id)) then denied() end
+ if not is_member(b,u) then denied() end
  if owner and b.ownerId~=u._id then denied() end
+ return b
+end
+-- Read-only access: book owners/members plus users the owner explicitly shared it with.
+local function book_view(id,u)
+ v.id(id); local b=db.one('books',{_id=id,deleting={['$ne']=true}}); if not b then missing() end
+ if not is_member(b,u) then
+  local filter=accepted_share_filter(); filter.bookId=id; filter.userId=u._id
+  if not db.one('bookShares',filter) then denied() end
+ end
  return b
 end
 local function mutation_guard()
@@ -71,12 +91,12 @@ local function duplicate_safe(fn,message)
  return res
 end
 local function index_ready()
- if ngx.shared.nestledger:get('indexes_ready_transfer_v1') then return end
+ if ngx.shared.nestledger:get('indexes_ready_shares_v1') then return end
  local lock=require('resty.lock'):new('nestledger',{timeout=5,exptime=20})
  local elapsed,err=lock:lock('indexes_lock'); if not elapsed then error({dependency='mongo',message=err},0) end
- if not ngx.shared.nestledger:get('indexes_ready_transfer_v1') then
+ if not ngx.shared.nestledger:get('indexes_ready_shares_v1') then
   local ok,result=pcall(db.indexes); if not ok then lock:unlock(); error(result,0) end
-  ngx.shared.nestledger:set('indexes_ready_transfer_v1',true,300)
+  ngx.shared.nestledger:set('indexes_ready_shares_v1',true,300)
  end
  lock:unlock()
 end
@@ -209,17 +229,38 @@ local function record_option_create(t,u)
 end
 local function books_available(u)
  local filter={deleting={['$ne']=true},['$or']=bson.array({{ownerId=u._id},{type='family',memberIds=u._id}})}
- return db.find('books',filter,{sort=bson.ordered({{'createdAt',-1},{'_id',-1}})})
+ local list=db.find('books',filter,{sort=bson.ordered({{'createdAt',-1},{'_id',-1}})})
+ local owners={}
+ local seen,ids={},{}
+ for _,b in ipairs(list) do seen[b._id]=true end
+ -- Books explicitly shared read-only with this account are listed after the
+ -- account's own books; the owner keeps full control and can revoke at any time.
+ local shared_filter=accepted_share_filter(); shared_filter.userId=u._id
+ for _,s in ipairs(db.find('bookShares',shared_filter,{sort=bson.ordered({{'createdAt',-1},{'_id',-1}})})) do
+  if not seen[s.bookId] then seen[s.bookId]=true; ids[#ids+1]=s.bookId end
+ end
+ if #ids>0 then
+  local by_id,owner_ids={},{}
+  for _,b in ipairs(db.find('books',{_id={['$in']=bson.array(ids)},deleting={['$ne']=true}})) do by_id[b._id]=b end
+  for _,id in ipairs(ids) do
+   local b=by_id[id]
+   if b then list[#list+1]=b; owner_ids[#owner_ids+1]=b.ownerId end
+  end
+  if #owner_ids>0 then
+   for _,x in ipairs(db.find('users',{_id={['$in']=bson.array(owner_ids)}})) do owners[x._id]=x end
+  end
+ end
+ return list,owners
 end
 local function books_list(u)
- local list=books_available(u); local by_id,out={},{}
+ local list,owners=books_available(u); local by_id,out={},{}
  for _,b in ipairs(list) do by_id[b._id]=b end
  -- Removed/deleted books in old preferences are ignored. New accessible books
  -- follow the saved order in the original createdAt DESC / id DESC order.
  for _,id in ipairs(u.bookOrder or {}) do
-  local b=by_id[id]; if b then out[#out+1]=book_out(b); by_id[id]=nil end
+  local b=by_id[id]; if b then out[#out+1]=book_out(b,not is_member(b,u),owners[b.ownerId]); by_id[id]=nil end
  end
- for _,b in ipairs(list) do if by_id[b._id] then out[#out+1]=book_out(b) end end
+ for _,b in ipairs(list) do if by_id[b._id] then out[#out+1]=book_out(b,not is_member(b,u),owners[b.ownerId]) end end
  return array(out)
 end
 local function books_order(t,u)
@@ -230,7 +271,7 @@ local function books_order(t,u)
  for _,id in ipairs(ids) do
   v.id(id); if seen[id] then v.bad('bookIds不能包含重复账本') end; seen[id]=true
  end
- local list=books_available(u); local by_id,out={},{}
+ local list,owners=books_available(u); local by_id,out={},{}
  for _,b in ipairs(list) do by_id[b._id]=b end
  for _,id in ipairs(ids) do
   local b=by_id[id]
@@ -240,7 +281,7 @@ local function books_order(t,u)
    if db.one('books',{_id=id,deleting={['$ne']=true}}) then denied() end
    conflict('账本列表已变化，请刷新后重试')
   end
-  out[#out+1]=book_out(b)
+  out[#out+1]=book_out(b,not is_member(b,u),owners[b.ownerId])
  end
  if #ids~=#list then conflict('账本列表已变化，请刷新后重试') end
  local updated=db.modify('users',{_id=u._id,authVersion=u.authVersion},{['$set']={bookOrder=bson.array(ids)}})
@@ -258,7 +299,7 @@ local function book_delete(id,u)
  -- A retry can finish cleanup after a transient dependency failure.
  local b=db.modify('books',{_id=id,ownerId=u._id},{['$set']={deleting=true}})
  if not b then missing() end
- db.delete('records',{bookId=id},true); db.delete('invitations',{bookId=id},true); db.delete('books',{_id=id,ownerId=u._id})
+ db.delete('records',{bookId=id},true); db.delete('invitations',{bookId=id},true); db.delete('bookShares',{bookId=id},true); db.delete('books',{_id=id,ownerId=u._id})
  return {ok=true}
 end
 local function book_members(id,u)
@@ -314,6 +355,9 @@ local function invite_action(id,u,accept)
  if not claimed then conflict('邀请已处理') end
  local updated=db.modify('books',{_id=b._id,type='family',ownerId=i.inviterId,deleting={['$ne']=true}},{['$addToSet']={memberIds=u._id}})
  if not updated then db.delete('invitations',{_id=id}); missing() end
+ -- A read-only share is superseded by full family membership. Cleanup is
+ -- best-effort: membership already succeeded and must not fail on this.
+ pcall(db.delete,'bookShares',{bookId=b._id,userId=u._id})
  return book_out(updated)
 end
 local function record_filter(id,args)
@@ -341,12 +385,80 @@ local function page_value(s,default,max,name)
  return v.integer(tonumber(s),name,1,max)
 end
 local function records_list(id,u)
- book_access(id,u)
+ book_view(id,u)
  local args=query({from=true,to=true,type=true,category=true,q=true,page=true,pageSize=true})
  local page=page_value(args.page,1,1000000,'页码'); local size=page_value(args.pageSize,20,100,'每页条数')
  local filter=record_filter(id,args); local list=db.find('records',filter,{sort=bson.ordered({{'occurredAt',-1},{'_id',-1}}),skip=(page-1)*size,limit=size}); local out={}
  for _,r in ipairs(list) do out[#out+1]=record_out(r) end
  return {items=array(out),total=db.count('records',filter),page=page,pageSize=size}
+end
+local function shares_list(id,u)
+ book_access(id,u,true)
+ local list=db.find('bookShares',{bookId=id},{sort=bson.ordered({{'createdAt',-1},{'_id',-1}})})
+ local ids={}; for _,s in ipairs(list) do ids[#ids+1]=s.userId end
+ local users={}
+ if #ids>0 then for _,x in ipairs(db.find('users',{_id={['$in']=bson.array(ids)}})) do users[x._id]=x end end
+ local out={}
+ for _,s in ipairs(list) do
+  local x=users[s.userId]
+  if x then out[#out+1]={id=s._id,userId=x._id,name=x.name,phone=x.phone,status=share_status(s),createdAt=s.createdAt} end
+ end
+ return {ownerId=u._id,shares=array(out)}
+end
+local function share_create(id,t,u)
+ local b=book_access(id,u,true)
+ v.fields(t,{phone=true}); local phone=v.phone(t.phone)
+ if phone==u.phone then conflict('不能分享给自己') end
+ local target=db.one('users',{phone=phone})
+ if not target then v.error(404,'USER_NOT_REGISTERED','该手机号尚未注册，请对方先注册后再分享') end
+ if target._id==b.ownerId or contains(b.memberIds,target._id) then conflict('该用户已是账本成员，无需分享') end
+ local existing=db.one('bookShares',{bookId=id,userId=target._id})
+ if existing then
+  local status=share_status(existing)
+  if status=='accepted' then conflict('该用户已接受分享，无需重复分享') end
+  if status=='pending' then conflict('已分享给该用户，等待对方接受') end
+  -- A rejected invitation may be sent again by the owner.
+  local changed=db.modify('bookShares',{_id=existing._id,status='rejected'},{['$set']={status='pending',sharedBy=u._id,createdAt=now()},['$unset']={respondedAt=''}})
+  if not changed then conflict('分享状态已变化，请刷新后重试') end
+  if not db.one('books',{_id=id,deleting={['$ne']=true}}) then db.delete('bookShares',{_id=changed._id}); missing() end
+  return {id=changed._id,userId=target._id,name=target.name,phone=target.phone,status='pending',createdAt=changed.createdAt}
+ end
+ local s={_id=crypto.random(12),bookId=id,userId=target._id,sharedBy=u._id,status='pending',createdAt=now()}
+ duplicate_safe(function() return db.insert('bookShares',s) end,'已分享给该用户')
+ -- Compensate an owner deleting the book concurrently with insertion.
+ if not db.one('books',{_id=id,deleting={['$ne']=true}}) then db.delete('bookShares',{_id=s._id}); missing() end
+ return {id=s._id,userId=target._id,name=target.name,phone=target.phone,status='pending',createdAt=s.createdAt},201
+end
+local function share_remove(id,userId,t,u)
+ book_access(id,u,true); v.id(userId); v.fields(t,{})
+ if db.delete('bookShares',{bookId=id,userId=userId})==0 then missing() end
+ return {ok=true}
+end
+local function received_shares(u)
+ local list=db.find('bookShares',{userId=u._id,status='pending'},{sort=bson.ordered({{'createdAt',-1},{'_id',-1}})})
+ local out={}
+ for _,s in ipairs(list) do
+  local b=db.one('books',{_id=s.bookId,deleting={['$ne']=true}})
+  if b then
+   local owner=db.one('users',{_id=b.ownerId})
+   out[#out+1]={id=s._id,bookId=b._id,bookName=b.name,ownerName=owner and owner.name or '对方',ownerPhone=owner and owner.phone or '',createdAt=s.createdAt}
+  end
+ end
+ return array(out)
+end
+local function share_respond(id,u,accept)
+ v.id(id)
+ local s=db.one('bookShares',{_id=id}); if not s then missing() end
+ if s.userId~=u._id then denied() end
+ if share_status(s)~='pending' then conflict('分享已处理') end
+ local b=db.one('books',{_id=s.bookId,deleting={['$ne']=true}}); if not b then missing() end
+ local changed=db.modify('bookShares',{_id=id,userId=u._id,status='pending'},{['$set']={status=accept and 'accepted' or 'rejected',respondedAt=now()}})
+ if not changed then conflict('分享已处理') end
+ if not accept then return {ok=true} end
+ b=db.one('books',{_id=s.bookId,deleting={['$ne']=true}}); if not b then missing() end
+ local read_only=not is_member(b,u)
+ local owner=read_only and db.one('users',{_id=b.ownerId}) or nil
+ return book_out(b,read_only,owner)
 end
 local function record_create(id,t,u)
  book_access(id,u); local r=v.record(t,false); r._id=crypto.random(12); r.bookId=id; r.createdBy=u._id; r.createdAt=now(); r.updatedAt=r.createdAt
@@ -364,7 +476,7 @@ local function record_mutate(id,rid,t,u,remove)
  return record_out(changed)
 end
 local function analysis(id,u)
- book_access(id,u); local args=query({period=true,date=true})
+ book_view(id,u); local args=query({period=true,date=true})
  local period=v.enum(args.period or 'month','分析周期',{'week','month','year'})
  local result=date.range(period,args.date,ngx.time()); if not result then v.bad('分析日期必须为有效YYYY-MM-DD') end
  local buckets={}; for _,bucket in ipairs(result.trend) do buckets[bucket.label]=bucket end
@@ -405,6 +517,9 @@ function M.dispatch()
  if path=='/api/auth/login' and method=='POST' then return login(t) end
  if path=='/api/auth/logout' and method=='POST' then v.fields(t,{}); sessions.destroy(sessions.token()); return {ok=true} end
  if not u then u,token=auth() end
+ if path=='/api/shares' and method=='GET' then return received_shares(u) end
+ local sid,action=path:match('^/api/shares/([^/]+)/([^/]+)$')
+ if sid and method=='POST' and (action=='accept' or action=='reject') then v.fields(t,{}); return share_respond(sid,u,action=='accept') end
  if path=='/api/auth/me' and method=='GET' then return user_out(u) end
  if path=='/api/auth/password' and method=='PATCH' then return password_change(t,u,token) end
  if path=='/api/auth/phone' and method=='PATCH' then return phone_change(t,u) end
@@ -431,6 +546,13 @@ function M.dispatch()
  if bid and method=='DELETE' then v.fields(t,{}); return member_remove(bid,member,u) end
  bid=path:match('^/api/books/([^/]+)/members$'); if bid and method=='GET' then return book_members(bid,u) end
  bid=path:match('^/api/books/([^/]+)/invitations$'); if bid and method=='POST' then return invite_create(bid,t,u) end
+ bid=path:match('^/api/books/([^/]+)/shares$')
+ if bid then
+  if method=='GET' then return shares_list(bid,u)
+  elseif method=='POST' then return share_create(bid,t,u) end
+ end
+ local share_user; bid,share_user=path:match('^/api/books/([^/]+)/shares/([^/]+)$')
+ if bid and method=='DELETE' then return share_remove(bid,share_user,t,u) end
  bid=path:match('^/api/books/([^/]+)$')
  if bid then
   if method=='DELETE' then v.fields(t,{}); return book_delete(bid,u)
