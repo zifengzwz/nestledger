@@ -16,9 +16,9 @@ NestLedger 由 OpenResty 同时提供 Vue 静态页面和 Lua API，MongoDB 保�
 | 环境 | 访问地址 | 监听 | TLS 证书 |
 | --- | --- | --- | --- |
 | `test`（默认） | `https://127.0.0.1:8443` | `127.0.0.1:8443` | 首次启动自动生成自签名证书 |
-| `production` | `https://zifeng.net:8001` | `0.0.0.0:8001` | **由运维单独提供**，通过 `TLS_CERT_FILE`／`TLS_KEY_FILE` 指定 |
+| `production` | `https://xxx.com:8001` | `0.0.0.0:8001` | **由运维单独提供**，通过 `TLS_CERT_FILE`／`TLS_KEY_FILE` 指定 |
 
-生产环境必须保证 `zifeng.net` 解析到部署机、防火墙放行 8001，且证书包含 `zifeng.net`。测试环境只监听回环地址。
+生产环境必须保证 `xxx.com` 解析到部署机、防火墙放行 8001，且证书包含 `xxx.com`。`xxx.com` 是示例域名，部署时请整体替换为实际域名（同时更新 `APP_ORIGIN` 和证书 SAN）。测试环境只监听回环地址。
 
 源码与运行数据分离：运行数据、生成的 Nginx 配置、TLS 证书都在 `.runtime/`（不入版本库），部署前请规划备份。
 
@@ -136,7 +136,7 @@ chmod 600 .env
 
 ```dotenv
 APP_ENV=production            # production 或 test
-APP_ORIGIN=https://zifeng.net:8001   # production；test 为 https://127.0.0.1:8443
+APP_ORIGIN=https://xxx.com:8001   # production；test 为 https://127.0.0.1:8443
 APP_TLS=true
 COOKIE_SECURE=true
 
@@ -153,7 +153,7 @@ REDIS_DATABASE=0
 REDIS_PASSWORD=<Redis 密码>
 ```
 
-各值可用 `openssl rand -hex 24` 生成，三个密码互不相同。`APP_ORIGIN` 必须和浏览器地址栏的 origin 完全一致（协议、主机名、端口），生产环境为 `https://zifeng.net:8001`。
+各值可用 `openssl rand -hex 24` 生成，三个密码互不相同。`APP_ORIGIN` 必须和浏览器地址栏的 origin 完全一致（协议、主机名、端口），生产环境为 `https://xxx.com:8001`。
 
 ### 4.1 生产环境证书（单独提供）
 
@@ -172,7 +172,7 @@ TLS_CERT_FILE=/etc/nestledger/tls/fullchain.pem
 TLS_KEY_FILE=/etc/nestledger/tls/privkey.pem
 ```
 
-要求证书链包含中间证书、SAN 含 `zifeng.net`，私钥权限 600。若用 systemd 的普通用户运行 OpenResty，需让该用户可读私钥，例如：
+要求证书链包含中间证书、SAN 含 `xxx.com`，私钥权限 600。若用 systemd 的普通用户运行 OpenResty，需让该用户可读私钥，例如：
 
 ```bash
 sudo chown nestledger:nestledger /etc/nestledger/tls/privkey.pem
@@ -230,7 +230,7 @@ bash scripts/dev-server.sh
 启动脚本会按 `APP_ENV` 生成监听地址：
 
 - `test`：`listen 127.0.0.1:8443 ssl`，访问 `https://127.0.0.1:8443`。
-- `production`：`listen 0.0.0.0:8001 ssl`，访问 `https://zifeng.net:8001`。
+- `production`：`listen 0.0.0.0:8001 ssl`，访问 `https://xxx.com:8001`。
 
 生产环境需要确认 DNS、防火墙（只放行必要来源）和证书三件事；仅本地排障才临时关闭 TLS：
 
@@ -242,7 +242,7 @@ APP_TLS=false COOKIE_SECURE=false APP_ORIGIN=http://127.0.0.1:8001 bash scripts/
 
 ```bash
 # 生产：证书可信时直接访问；测试环境用 -k 跳过自签名校验
-curl -fsS  https://zifeng.net:8001/api/health
+curl -fsS  https://xxx.com:8001/api/health
 curl -fsk  https://127.0.0.1:8443/api/health
 # 期望 {"data":{"mongo":true,"redis":true,"status":"ok"}}
 ```
@@ -399,7 +399,7 @@ journalctl -u nestledger-app -f
 | --- | --- |
 | 启动报 `frontend/dist/index.html is missing` | 使用了未打包的源码；改用 `scripts/build-release.sh` 生成的发布包 |
 | 生产启动报需要 `TLS_CERT_FILE`／`TLS_KEY_FILE` | 未提供生产证书；按 4.1 放置并指向证书 |
-| 浏览器提示证书错误（生产） | 证书未包含 `zifeng.net`、链不完整或配错文件 |
+| 浏览器提示证书错误（生产） | 证书未包含 `xxx.com`、链不完整或配错文件 |
 | `/api/health` 返回 503 或 `mongo:false` | 应用环境缺少 `MONGO_USERNAME`／`MONGO_PASSWORD`，或认证库不对；完整重启 |
 | 页面能开但登录一直失败 | Redis 密码不一致；Redis 与应用必须使用同一个 `REDIS_PASSWORD`，并一起重启 |
 | 写操作返回 403 | `APP_ORIGIN` 与浏览器地址不完全一致（协议、主机、端口） |
@@ -414,7 +414,7 @@ journalctl -u nestledger-app -f
 - 生产证书私钥权限 600；只通过 `TLS_CERT_FILE`／`TLS_KEY_FILE` 引用，不放进版本库。
 - MongoDB、Redis 仅监听 `127.0.0.1` 并保持认证开启；不要为排障临时关闭认证。
 - 应用使用最小权限 Mongo 账号（`readWrite` 于业务库），管理员账号只用于维护。
-- 生产只开放 8001，限制来源 IP；`COOKIE_SECURE=true`、`APP_ORIGIN=https://zifeng.net:8001`。
+- 生产只开放 8001，限制来源 IP；`COOKIE_SECURE=true`、`APP_ORIGIN=https://xxx.com:8001`。
 - `PBKDF2_ITERATIONS` 保持默认 600000 或更高，生产不要调低。
 - 部署机不安装 Node/npm；不要向不可信网络暴露 Vite 开发服务器（5173）或数据库端口。
 - 定期冷备份并演练恢复；升级或改配置前先备份。

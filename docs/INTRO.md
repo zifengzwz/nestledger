@@ -50,7 +50,7 @@ NestLedger 把「多人共享的家庭账本」和「只属于个人的私密账
 | 环境 | 地址 | 说明 |
 | --- | --- | --- |
 | 测试 | `https://127.0.0.1:8443` | 本机自签名证书，自动生成 |
-| 发布 | `https://zifeng.net:8001` | TLS 证书由运维单独提供 |
+| 发布 | `https://xxx.com:8001` | TLS 证书由运维单独提供 |
 
 部署机只需 OpenResty、MongoDB、Redis、Python 与 openssl；Node.js/npm 仅用于构建机生成发布包。
 

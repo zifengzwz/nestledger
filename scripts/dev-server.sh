@@ -2,7 +2,7 @@
 # Start OpenResty with a generated configuration.
 # APP_ENV selects the environment profile:
 #   test       -> https://127.0.0.1:8443, loopback only, self-signed certificate
-#   production -> https://zifeng.net:8001, public bind, certificate supplied by the operator
+#   production -> https://xxx.com:8001 (replace xxx.com with your domain), public bind, certificate supplied by the operator
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 export MONGO_HOST="${MONGO_HOST:-127.0.0.1}"
@@ -29,7 +29,7 @@ esac
 export APP_TLS="${APP_TLS:-true}"
 if [[ "$APP_TLS" == "true" ]]; then
   if [[ "$APP_ENV" == "production" ]]; then
-    export APP_ORIGIN="${APP_ORIGIN:-https://zifeng.net:$APP_PORT}"
+    export APP_ORIGIN="${APP_ORIGIN:-https://xxx.com:$APP_PORT}"
   else
     export APP_ORIGIN="${APP_ORIGIN:-https://127.0.0.1:$APP_PORT}"
   fi

@@ -82,13 +82,13 @@ bash scripts/dev-server.sh  # 终端3
 ```
 
 - 测试环境：`APP_ENV=test`，访问 `https://127.0.0.1:8443`，自签名证书自动生成。
-- 发布环境：`APP_ENV=production`，访问 `https://zifeng.net:8001`，需单独提供证书并设置 `TLS_CERT_FILE`／`TLS_KEY_FILE`。
+- 发布环境：`APP_ENV=production`，访问 `https://xxx.com:8001`（`xxx.com` 为示例域名，部署时替换成自己的域名），需单独提供证书并设置 `TLS_CERT_FILE`／`TLS_KEY_FILE`。
 
 完整的发布包内容、证书放置、数据库初始化和 systemd 常驻步骤见[部署指南](docs/DEPLOYMENT.md)。
 
 开发脚本使用独立端口，避免复用本机已有数据库服务：MongoDB 27028、Redis 6389，业务库 `nestledger_dev`。数据及生成的配置保存在忽略提交的 `.runtime/` 目录。每个服务在前台运行，Ctrl+C停止，数据保留。
 
-> `APP_ORIGIN` 必须与浏览器地址的origin完全相同。测试环境默认 `https://127.0.0.1:8443`；若使用 `https://localhost:8443`，需以 `APP_ORIGIN=https://localhost:8443 bash scripts/dev-server.sh` 启动。发布环境为 `https://zifeng.net:8001`。HTTP 仅用于本地排障：`APP_TLS=false COOKIE_SECURE=false APP_ORIGIN=http://127.0.0.1:8443 bash scripts/dev-server.sh`。
+> `APP_ORIGIN` 必须与浏览器地址的origin完全相同。测试环境默认 `https://127.0.0.1:8443`；若使用 `https://localhost:8443`，需以 `APP_ORIGIN=https://localhost:8443 bash scripts/dev-server.sh` 启动。发布环境为 `https://xxx.com:8001`。HTTP 仅用于本地排障：`APP_TLS=false COOKIE_SECURE=false APP_ORIGIN=http://127.0.0.1:8443 bash scripts/dev-server.sh`。
 
 本地Nginx日志：[访问日志](.runtime/nginx/logs/access.log)、[错误日志](.runtime/nginx/logs/error.log)。[Nginx配置模板](backend/nginx.conf)的项目路径与DNS占位符由[启动脚本](scripts/dev-server.sh)生成，不能直接用模板启动nginx。
 

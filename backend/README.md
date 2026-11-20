@@ -28,7 +28,7 @@
 | APP_ENV | test | test：`127.0.0.1:8443` 自签名；production：`0.0.0.0:8001`，需单独提供证书 |
 | APP_PORT | 8443 / 8001 | 按APP_ENV的默认端口 |
 | APP_BIND | 127.0.0.1 / 0.0.0.0 | 监听地址 |
-| APP_ORIGIN | 按APP_ENV | 浏览器允许的唯一写入origin；production为`https://zifeng.net:8001` |
+| APP_ORIGIN | 按APP_ENV | 浏览器允许的唯一写入origin；production为`https://xxx.com:8001` |
 | APP_TLS | true | 关闭仅用于本地HTTP排障 |
 | TLS_CERT_FILE / TLS_KEY_FILE | 无 | 生产证书链与私钥路径，必须可读 |
 | COOKIE_SECURE | 按APP_TLS | HTTPS部署必须为true |
