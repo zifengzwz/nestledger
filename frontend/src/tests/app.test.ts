@@ -26,6 +26,7 @@ const analysis = {
   recordCount: 0,
   trend: [],
   categories: [],
+  members: [],
 };
 const recordOptions = {
   expenseCategories: [
@@ -549,6 +550,186 @@ describe("application integrated API flows", () => {
     expect(wrapper.find('input[type="tel"]').exists()).toBe(true);
   });
 
+  it("shows who recorded family records and filters overview, records and analysis by member", async () => {
+    const transport = setup();
+    const base = transport.getMockImplementation()!;
+    const family = { ...book, memberIds: ["u1", "u2"] };
+    const authors = [
+      { id: "u1", name: "小禾" },
+      { id: "u2", name: "阿木" },
+    ];
+    const makeRecord = (
+      id: string,
+      createdBy: string,
+      createdByName: string,
+      category: string,
+      note: string,
+    ) => ({
+      id,
+      bookId: "b1",
+      createdBy,
+      createdByName,
+      type: "expense",
+      amountCents: 100,
+      category,
+      occurredAt: "2026-11-16T04:00:00Z",
+      note,
+      paymentSource: "微信",
+      createdAt: "2026-11-16T04:00:00Z",
+      updatedAt: "2026-11-16T04:00:00Z",
+    });
+    const rows = [
+      makeRecord("r1", "u1", "小禾", "早餐", "小禾的早餐"),
+      makeRecord("r2", "u2", "阿木", "午餐", "阿木的午餐"),
+    ];
+    const memberAnalysis = {
+      ...analysis,
+      members: [
+        {
+          userId: "u1",
+          name: "小禾",
+          incomeCents: 1000,
+          expenseCents: 2000,
+          balanceCents: -1000,
+          recordCount: 1,
+        },
+        {
+          userId: "u2",
+          name: "阿木",
+          incomeCents: 0,
+          expenseCents: 100,
+          balanceCents: -100,
+          recordCount: 1,
+        },
+      ],
+    };
+    transport.mockImplementation(async (path, options) => {
+      if (path === "/api/books")
+        return new Response(JSON.stringify({ data: [family] }));
+      if (path.startsWith("/api/books/b1/records?")) {
+        const url = new URL("http://local" + path);
+        const createdBy = url.searchParams.get("createdBy");
+        const items = createdBy
+          ? rows.filter((row) => row.createdBy === createdBy)
+          : rows;
+        return new Response(
+          JSON.stringify({
+            data: { items, total: items.length, page: 1, pageSize: 20, authors },
+          }),
+        );
+      }
+      if (path.startsWith("/api/books/b1/analysis?"))
+        return new Response(JSON.stringify({ data: memberAnalysis }));
+      return base(path, options);
+    });
+    wrapper = mount(App, { attachTo: document.body });
+    await flushPromises();
+    expect(wrapper.text()).toContain("记录人");
+    expect(wrapper.text()).toContain("小禾的早餐");
+    expect(wrapper.text()).toContain("阿木的午餐");
+    expect(
+      wrapper.findAll("td").some((cell) => cell.text() === "我"),
+    ).toBe(true);
+    const select = wrapper.get('select[aria-label="按记录人筛选"]');
+    expect(select.findAll("option").map((option) => option.text())).toEqual([
+      "全部成员",
+      "我",
+      "阿木",
+    ]);
+    await select.setValue("u2");
+    await flushPromises();
+    expect(
+      transport.mock.calls.some(
+        (call) =>
+          call[0].startsWith("/api/books/b1/records?") &&
+          call[0].includes("createdBy=u2"),
+      ),
+    ).toBe(true);
+    expect(
+      transport.mock.calls.some(
+        (call) =>
+          call[0].includes("/api/books/b1/analysis?") &&
+          call[0].includes("member=u2"),
+      ),
+    ).toBe(true);
+    expect(wrapper.text()).toContain("阿木的午餐");
+    expect(wrapper.text()).not.toContain("小禾的早餐");
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("收支分析"))!
+      .trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("成员收支");
+    const memberTable = wrapper.get(".member-table");
+    expect(memberTable.text()).toContain("我");
+    expect(memberTable.text()).toContain("阿木");
+    expect(memberTable.text()).not.toContain("小禾");
+    expect(
+      wrapper.findAll("button").some((button) => button.text() === "查看全部"),
+    ).toBe(true);
+  });
+  it("switches the analysis to all books using only the current user's records", async () => {
+    const transport = setup();
+    const base = transport.getMockImplementation()!;
+    const allAnalysis = {
+      ...analysis,
+      expenseCents: 300,
+      balanceCents: -300,
+      recordCount: 2,
+      books: [
+        {
+          bookId: "b1",
+          name: "小家的生活",
+          incomeCents: 0,
+          expenseCents: 200,
+          balanceCents: -200,
+          recordCount: 1,
+        },
+        {
+          bookId: "b2",
+          name: "我的日常",
+          incomeCents: 0,
+          expenseCents: 100,
+          balanceCents: -100,
+          recordCount: 1,
+        },
+      ],
+    };
+    transport.mockImplementation(async (path, options) =>
+      path.startsWith("/api/analysis?")
+        ? new Response(JSON.stringify({ data: allAnalysis }))
+        : base(path, options),
+    );
+    wrapper = mount(App, { attachTo: document.body });
+    await flushPromises();
+    await wrapper
+      .findAll("nav button")
+      .find((button) => button.text().includes("收支分析"))!
+      .trigger("click");
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "全部账本")!
+      .trigger("click");
+    await flushPromises();
+    expect(
+      transport.mock.calls.some((call) => call[0].startsWith("/api/analysis?")),
+    ).toBe(true);
+    expect(wrapper.text()).toContain("各账本汇总");
+    expect(wrapper.text()).toContain("小家的生活");
+    expect(wrapper.text()).toContain("我的日常");
+    expect(wrapper.text()).not.toContain("成员收支");
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "当前账本")!
+      .trigger("click");
+    await flushPromises();
+    expect(
+      transport.mock.calls.filter((call) =>
+        call[0].startsWith("/api/books/b1/analysis?"),
+      ).length,
+    ).toBeGreaterThan(1);
+  });
   it("opens the share dialog for the owner and shows recipients", async () => {
     const transport = setup();
     const base = transport.getMockImplementation()!;

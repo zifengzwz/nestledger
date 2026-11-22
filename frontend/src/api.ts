@@ -55,6 +55,7 @@ export interface LedgerRecord {
   id: string;
   bookId: string;
   createdBy: string;
+  createdByName?: string;
   type: "income" | "expense";
   amountCents: number;
   category: string;
@@ -72,11 +73,16 @@ export interface RecordOptions {
 }
 export type RecordOptionKind =
   "expenseCategory" | "incomeCategory" | "paymentSource";
+export interface RecordAuthor {
+  id: string;
+  name: string;
+}
 export interface RecordPage {
   items: LedgerRecord[];
   total: number;
   page: number;
   pageSize: number;
+  authors?: RecordAuthor[];
 }
 export interface Analysis {
   period: string;
@@ -88,6 +94,24 @@ export interface Analysis {
   recordCount: number;
   trend: { label: string; incomeCents: number; expenseCents: number }[];
   categories: { category: string; amountCents: number; count: number }[];
+  members: AnalysisMember[];
+  books?: AnalysisBook[];
+}
+export interface AnalysisBook {
+  bookId: string;
+  name: string;
+  incomeCents: number;
+  expenseCents: number;
+  balanceCents: number;
+  recordCount: number;
+}
+export interface AnalysisMember {
+  userId: string;
+  name: string;
+  incomeCents: number;
+  expenseCents: number;
+  balanceCents: number;
+  recordCount: number;
 }
 export class ApiError extends Error {
   constructor(

@@ -38,6 +38,7 @@ import {
   type Analysis,
   type RecordOptions,
   type RecordOptionKind,
+  type RecordAuthor,
 } from "./api";
 import {
   money,
@@ -88,6 +89,9 @@ const isOwner = computed(() =>
   canManage(activeBook.value, user.value?.id || ""),
 );
 const readOnlyBook = computed(() => activeBook.value?.readOnly === true);
+const isFamilyBook = computed(() => activeBook.value?.type === "family");
+const displayMemberName = (id: string, name: string) =>
+  id === user.value?.id ? "我" : name;
 const inboxCount = computed(
   () => invitations.value.length + receivedShares.value.length,
 );
@@ -111,7 +115,10 @@ async function openInvite() {
   field?.focus({ preventScroll: true });
 }
 const records = ref<RecordPage>({ items: [], total: 0, page: 1, pageSize: 20 }),
-  analysis = ref<Analysis | null>(null);
+  analysis = ref<Analysis | null>(null),
+  authors = ref<RecordAuthor[]>([]),
+  memberFilter = ref(""),
+  analysisScope = ref<"book" | "all">("book");
 const loadingRecords = ref(false),
   loadingAnalysis = ref(false),
   recordsError = ref(""),
@@ -488,8 +495,12 @@ async function loadRecords() {
       if (f[key]) params.set(key, f[key]);
     if (f.from) params.set("from", isoShanghai(f.from));
     if (f.to) params.set("to", nextDayISO(f.to));
+    if (memberFilter.value) params.set("createdBy", memberFilter.value);
     const result = await api<RecordPage>(`/books/${id}/records?${params}`);
-    if (sequence === recordRequest) records.value = result;
+    if (sequence === recordRequest) {
+      records.value = result;
+      authors.value = result.authors ?? [];
+    }
   } catch (error) {
     if (sequence === recordRequest) recordsError.value = failure(error);
   } finally {
@@ -507,8 +518,17 @@ async function loadAnalysis() {
   loadingAnalysis.value = true;
   analysisError.value = "";
   try {
+    const params = new URLSearchParams({
+      period: period.value,
+      date: analysisDate.value,
+    });
+    const allBooks = analysisScope.value === "all";
+    if (!allBooks && memberFilter.value)
+      params.set("member", memberFilter.value);
     const result = await api<Analysis>(
-      `/books/${id}/analysis?${new URLSearchParams({ period: period.value, date: analysisDate.value })}`,
+      allBooks
+        ? `/analysis?${params}`
+        : `/books/${id}/analysis?${params}`,
     );
     if (sequence === analysisRequest) analysis.value = result;
   } catch (error) {
@@ -539,9 +559,32 @@ async function loadMembers() {
     if (sequence === membersRequest) membersLoading.value = false;
   }
 }
+function setAnalysisScope(scope: "book" | "all") {
+  if (scope === analysisScope.value) return;
+  analysisScope.value = scope;
+  if (scope === "all" && memberFilter.value) {
+    memberFilter.value = "";
+    if (page.value === 1) void loadRecords();
+    else page.value = 1;
+  }
+  void loadAnalysis();
+}
+function setMemberFilter(value: string) {
+  if (value === memberFilter.value) return;
+  memberFilter.value = value;
+  if (page.value === 1) void loadRecords();
+  else page.value = 1;
+  void loadAnalysis();
+}
 function navigate(target: string) {
+  const leavingAll =
+    target !== "analysis" && analysisScope.value === "all";
   view.value = target;
   mobileMenu.value = false;
+  if (leavingAll) {
+    analysisScope.value = "book";
+    void loadAnalysis();
+  }
   if (target === "members") void loadMembers();
   if (target === "invitations")
     void refreshInbox().catch((e) => toast(failure(e), true));
@@ -551,6 +594,9 @@ watch(bookId, () => {
   inviteError.value = "";
   page.value = 1;
   members.value = [];
+  authors.value = [];
+  memberFilter.value = "";
+  analysisScope.value = "book";
   analysis.value = null;
   records.value = { items: [], total: 0, page: 1, pageSize: 20 };
   void loadRecords();
@@ -1165,6 +1211,37 @@ onMounted(initialize);
               分享给你的<strong>只读账本</strong>。你可以查看全部记录和收支分析，但不能新增、修改、导入或导出。
             </p>
           </div>
+          <div
+            v-if="
+              analysisScope === 'book' &&
+              isFamilyBook &&
+              activeBook &&
+              authors.length > 1
+            "
+            class="member-filter-bar"
+          >
+            <label class="inline-label"
+              >记录人<select
+                :value="memberFilter"
+                aria-label="按记录人筛选"
+                @change="
+                  setMemberFilter(
+                    ($event.target as HTMLSelectElement).value,
+                  )
+                "
+              >
+                <option value="">全部成员</option>
+                <option
+                  v-for="author in authors"
+                  :key="author.id"
+                  :value="author.id"
+                >
+                  {{ displayMemberName(author.id, author.name) }}
+                </option>
+              </select></label
+            >
+            <span class="period-hint">概览、明细和分析同步按成员筛选</span>
+          </div>
           <div v-if="!activeBook" class="card empty-state large">
             <span class="empty-icon"><BookOpen :size="38" /></span>
             <h2>生活的新一页，从这里开始</h2>
@@ -1194,6 +1271,24 @@ onMounted(initialize);
                     {{ label }}
                   </button>
                 </div>
+                <div
+                  v-if="view === 'analysis'"
+                  class="segmented"
+                  aria-label="统计范围"
+                >
+                  <button
+                    :class="{ active: analysisScope === 'book' }"
+                    @click="setAnalysisScope('book')"
+                  >
+                    当前账本
+                  </button>
+                  <button
+                    :class="{ active: analysisScope === 'all' }"
+                    @click="setAnalysisScope('all')"
+                  >
+                    全部账本
+                  </button>
+                </div>
                 <label class="inline-label"
                   >查看日期<input
                     v-model="analysisDate"
@@ -1201,7 +1296,11 @@ onMounted(initialize);
                     aria-label="分析日期"
                     required /></label
                 ><span class="period-hint"
-                  >以北京时间统计 · 自然{{
+                  >{{
+                    analysisScope === "all"
+                      ? "全部账本 · 仅统计我记录的收支 · "
+                      : ""
+                  }}以北京时间统计 · 自然{{
                     period === "week"
                       ? "周（周一开始）"
                       : period === "month"
@@ -1375,7 +1474,124 @@ onMounted(initialize);
                       </div>
                     </div>
                   </section>
-                </div></template
+                </div>
+                <section
+                  v-if="
+                    view === 'analysis' &&
+                    analysisScope === 'all' &&
+                    analysis.books?.length
+                  "
+                  class="card member-analysis-card"
+                >
+                  <div class="section-head">
+                    <div>
+                      <h2>各账本汇总</h2>
+                      <p>仅统计由我记录的收支</p>
+                    </div>
+                    <BookOpen :size="21" class="muted" />
+                  </div>
+                  <div class="table-wrap">
+                    <table class="records-table member-table book-summary-table">
+                      <thead>
+                        <tr>
+                          <th>账本</th>
+                          <th>收入</th>
+                          <th>支出</th>
+                          <th>结余</th>
+                          <th>笔数</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr
+                          v-for="book in analysis.books"
+                          :key="book.bookId"
+                        >
+                          <td>
+                            <strong>{{ book.name }}</strong>
+                          </td>
+                          <td class="income-text">
+                            +{{ money(book.incomeCents) }}
+                          </td>
+                          <td>−{{ money(book.expenseCents) }}</td>
+                          <td>{{ money(book.balanceCents) }}</td>
+                          <td>{{ book.recordCount }} 笔</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+                <section
+                  v-if="
+                    view === 'analysis' &&
+                    analysisScope === 'book' &&
+                    isFamilyBook &&
+                    analysis.members.length
+                  "
+                  class="card member-analysis-card"
+                >
+                  <div class="section-head">
+                    <div>
+                      <h2>成员收支</h2>
+                      <p>本周期每位家庭成员的记录与结余</p>
+                    </div>
+                    <Users :size="21" class="muted" />
+                  </div>
+                  <div class="table-wrap">
+                    <table class="records-table member-table">
+                      <thead>
+                        <tr>
+                          <th>成员</th>
+                          <th>收入</th>
+                          <th>支出</th>
+                          <th>结余</th>
+                          <th>笔数</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr
+                          v-for="member in analysis.members"
+                          :key="member.userId"
+                          :class="{
+                            'member-row-active':
+                              memberFilter === member.userId,
+                          }"
+                        >
+                          <td>
+                            <strong>{{
+                              displayMemberName(member.userId, member.name)
+                            }}</strong>
+                          </td>
+                          <td class="income-text">
+                            +{{ money(member.incomeCents) }}
+                          </td>
+                          <td>−{{ money(member.expenseCents) }}</td>
+                          <td>{{ money(member.balanceCents) }}</td>
+                          <td>{{ member.recordCount }} 笔</td>
+                          <td class="member-action">
+                            <button
+                              class="text-button"
+                              @click="
+                                setMemberFilter(
+                                  memberFilter === member.userId
+                                    ? ''
+                                    : member.userId,
+                                )
+                              "
+                            >
+                              {{
+                                memberFilter === member.userId
+                                  ? "查看全部"
+                                  : "只看该成员"
+                              }}
+                            </button>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </template
               ></template
             >
             <section
@@ -1471,7 +1687,7 @@ onMounted(initialize);
                 </h3>
                 <p>
                   {{
-                    Object.values(appliedFilter).some(Boolean)
+                    Object.values(appliedFilter).some(Boolean) || memberFilter
                       ? "试试调整筛选条件，看看其他生活片段。"
                       : "一顿饭、一份工资，都是记录生活的开始。"
                   }}
@@ -1489,6 +1705,7 @@ onMounted(initialize);
                   <thead>
                     <tr>
                       <th>分类 / 备注</th>
+                      <th v-if="isFamilyBook">记录人</th>
                       <th>时间（北京）</th>
                       <th>支付方式</th>
                       <th class="amount-col">金额</th>
@@ -1518,6 +1735,14 @@ onMounted(initialize);
                             }}</small></span
                           >
                         </div>
+                      </td>
+                      <td v-if="isFamilyBook">
+                        {{
+                          displayMemberName(
+                            record.createdBy,
+                            record.createdByName || "未知成员",
+                          )
+                        }}
                       </td>
                       <td class="date-cell">
                         {{ recordDate(record.occurredAt) }}

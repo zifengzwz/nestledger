@@ -54,11 +54,11 @@ Only books whose share is accepted (or legacy share rows created before statuses
 
 ## Records
 UI labels call `paymentSource` / `paymentSources` “支付方式”. Internal API and MongoDB field names are retained for compatibility with existing records and saved custom options.
-- GET /books/:id/records?from=ISO&to=ISO&type=income|expense&category=...&q=...&page=1&pageSize=20 -> `{items:[record],total,page,pageSize}` (from inclusive/to exclusive)
+- GET /books/:id/records?from=ISO&to=ISO&type=income|expense&category=...&q=...&createdBy=userId&page=1&pageSize=20 -> `{items:[record],total,page,pageSize,authors:[{id,name}]}` (from inclusive/to exclusive). `createdBy` filters to one recorder. `authors` lists current book members plus anyone who has recorded in the book, so the UI can offer a member filter even after a member leaves. List items also carry `createdByName` when the account still exists; create/patch responses keep the base record shape.
 - POST /books/:id/records `{type,amountCents,category,occurredAt,note,paymentSource}` -> record
 - PATCH /books/:id/records/:recordId same fields -> record
 - DELETE /books/:id/records/:recordId -> `{ok:true}`
-Record `{id,bookId,createdBy,type:"income"|"expense",amountCents,category,occurredAt,note,paymentSource,createdAt,updatedAt}`. Members can view/create. Only creator or book owner edits/deletes. amount positive safe integer <= 99999999999 cents; note <=500 chars; category/paymentSource <=40 chars. Date validated.
+Record `{id,bookId,createdBy,type:"income"|"expense",amountCents,category,occurredAt,note,paymentSource,createdAt,updatedAt}`; list responses additionally include `createdByName`. Members can view/create. Only creator or book owner edits/deletes. amount positive safe integer <= 99999999999 cents; note <=500 chars; category/paymentSource <=40 chars. Date validated.
 
 ## Book export/import
 - GET /books/:id/export?from=ISO&to=ISO -> `{format:"nestledger",version:1,exportedAt:ISO,book:{name,type},records:[{type,amountCents,category,occurredAt,note,paymentSource}]}` in the ordinary `{data:...}` envelope. Owners and family members may export. Only `from` (inclusive) and `to` (exclusive) are accepted; invalid/inverted dates or unknown query parameters return 400. Stable `occurredAt ASC,id ASC`; at most 5000 records, otherwise 422 `EXPORT_LIMIT_EXCEEDED` with a request to narrow the date range. Empty records encode `[]`. No record IDs, creator/member IDs, account settings or other private user data are exported.
@@ -69,8 +69,10 @@ Record `{id,bookId,createdBy,type:"income"|"expense",amountCents,category,occurr
 - Standalone MongoDB has no cross-collection transaction; concurrent readers may observe a partial in-progress batch. A hard worker crash or unresolved final commit acknowledgement can leave a `processing` receipt; the API deliberately returns `IMPORT_IN_PROGRESS` rather than stealing an expiring lease. Operators must first establish the old execution has stopped, then inspect the scoped receipt and batch: verify a fully completed batch and access checks before marking `committed`, or mark `rollback_pending` to let the same request clean up/retry. Never blindly delete a completed batch or reset its token. If final acknowledgement is lost but a committed receipt can be re-read, success/replay is returned and that batch is not rolled back. Unresolved dependency failures are explicit, not claimed as successful imports.
 
 ## Analysis
-- GET /books/:id/analysis?period=week|month|year&date=YYYY-MM-DD -> `{period,from,to,incomeCents,expenseCents,balanceCents,recordCount,trend:[{label,incomeCents,expenseCents}],categories:[{category,amountCents,count}]}`
+- GET /books/:id/analysis?period=week|month|year&date=YYYY-MM-DD&member=userId -> `{period,from,to,incomeCents,expenseCents,balanceCents,recordCount,trend:[{label,incomeCents,expenseCents}],categories:[{category,amountCents,count}],members:[{userId,name,incomeCents,expenseCents,balanceCents,recordCount}]}`. `member` restricts the top-level totals/trend/category ranking to one recorder; `members` always reports the whole selected period for every current member (including zero-record members) plus historical recorders, so the UI can show a per-member breakdown and switch filters. `member` must be a valid object id; invalid ids return 400.
 Period calendar in Asia/Shanghai: week Monday through Sunday, month, year. Trend week/month daily and year monthly; categories expense descending. date defaults current Shanghai day. Zero buckets included.
+
+- GET /analysis?period=week|month|year&date=YYYY-MM-DD -> account-wide analysis across books the current account owns or belongs to, counting only records whose `createdBy` is the current account. Read-only shared books are excluded. Response has the same totals/trend/category shape plus `books:[{bookId,name,incomeCents,expenseCents,balanceCents,recordCount}]` and `members:[]`; `books` includes owned/member books even when they have no records in the period. Invalid period/date returns 400.
 
 ## Misc
 - GET /health -> `{status:"ok",mongo: true,redis:true}` or 503 dependency health.

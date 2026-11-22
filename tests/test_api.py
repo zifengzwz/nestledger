@@ -24,6 +24,11 @@ def phone():
     return '139' + ''.join(str(secrets.randbelow(10)) for _ in range(8))
 
 
+def without_attribution(items):
+    """Drop list-only creator names before comparing with create/patch payloads."""
+    return [{key: value for key, value in item.items() if key != 'createdByName'} for item in items]
+
+
 class Client:
     def __init__(self):
         self.jar = http.cookiejar.CookieJar()
@@ -216,6 +221,26 @@ class PlatformTests(unittest.TestCase):
         self.denied(stranger, 'DELETE', f"/books/{fid}/records/{record['id']}")
         modified = self.ok(owner, 'PATCH', f"/books/{fid}/records/{record['id']}", dict(payload, note='更正'))
         self.assertEqual(modified['note'], '更正')
+        # Family records keep the creator and can be filtered/aggregated by member.
+        records_all = self.ok(owner, 'GET', f'/books/{fid}/records')
+        self.assertEqual({item['id'] for item in records_all['authors']},
+                         {owner.user['id'], member.user['id']})
+        creators = {item['createdBy']: item['createdByName'] for item in records_all['items']}
+        self.assertEqual(creators[owner.user['id']], '家庭创建人')
+        self.assertEqual(creators[member.user['id']], '家庭成员')
+        member_records = self.ok(owner, 'GET', f'/books/{fid}/records?createdBy={member.user["id"]}')
+        self.assertEqual(member_records['total'], 1)
+        self.assertEqual(member_records['items'][0]['createdBy'], member.user['id'])
+        self.denied(owner, 'GET', f'/books/{fid}/records?createdBy=bad', codes=(400,))
+        member_analysis = self.ok(owner, 'GET',
+            f'/books/{fid}/analysis?period=month&date=2026-11-16&member={member.user["id"]}')
+        self.assertEqual((member_analysis['expenseCents'], member_analysis['recordCount']), (1234, 1))
+        self.assertEqual({item['userId'] for item in member_analysis['members']},
+                         {owner.user['id'], member.user['id']})
+        member_stat = next(item for item in member_analysis['members'] if item['userId'] == member.user['id'])
+        self.assertEqual((member_stat['name'], member_stat['expenseCents'], member_stat['recordCount']),
+                         ('家庭成员', 1234, 1))
+        self.denied(owner, 'GET', f'/books/{fid}/analysis?period=month&member=bad', codes=(400,))
         # Read-only sharing is an invitation the recipient must accept or reject.
         shares = f'/books/{fid}/shares'
         self.denied(member, 'POST', shares, {'phone': stranger.phone}, codes=(403,))
@@ -267,7 +292,7 @@ class PlatformTests(unittest.TestCase):
         self.assertNotIn('ownerPhone', owner_view)
         shared_records = self.ok(stranger, 'GET', f'/books/{fid}/records')
         self.assertEqual(shared_records['total'], 2)
-        self.assertCountEqual(shared_records['items'], [own_record, modified])
+        self.assertCountEqual(without_attribution(shared_records['items']), [own_record, modified])
         shared_analysis = self.ok(stranger, 'GET', f'/books/{fid}/analysis?period=month&date=2026-11-16')
         self.assertEqual(shared_analysis['expenseCents'], 2468)
         self.denied(stranger, 'POST', f'/books/{fid}/records', payload, codes=(403,))
@@ -666,7 +691,7 @@ class PlatformTests(unittest.TestCase):
                                      {'kind': kind, 'name': name, 'icon': icon}), expected)
         self.assertEqual(self.ok(owner, 'GET', '/record-options'), expected)
         self.assertEqual(self.ok(other, 'GET', '/record-options'), full_defaults)
-        self.assertEqual(self.ok(other, 'GET', path)['items'], [historical])
+        self.assertEqual(without_attribution(self.ok(other, 'GET', path)['items']), [historical])
         other_options = self.ok(other, 'POST', '/record-options',
                                 {'kind': 'paymentSource', 'name': '自选名称', 'icon': 'qr-code'})
         self.assertEqual(other_options['icons'], {'expenseCategory': {}, 'incomeCategory': {},
@@ -713,7 +738,7 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(len(final), len(defaults[field]) + 50)
             self.assertEqual(len(final), len(set(final)))
             self.denied(owner, 'POST', '/record-options', {'kind': kind, 'name': '超过上限'}, codes=(409,))
-        self.assertEqual(self.ok(other, 'GET', path)['items'], [historical])
+        self.assertEqual(without_attribution(self.ok(other, 'GET', path)['items']), [historical])
         self.ok(owner, 'DELETE', f'/books/{family["id"]}')
 
     def test_unregistered_phone_rejected_then_registered_user_invitation_and_rejection(self):
@@ -753,6 +778,47 @@ class PlatformTests(unittest.TestCase):
         self.denied(user, 'GET', path + '?page=0', codes=(400, 422))
         self.denied(user, 'GET', f'/books/{book["id"]}/analysis?period=decade', codes=(400, 422))
         self.ok(user, 'DELETE', f'/books/{book["id"]}')
+
+    def test_all_books_analysis_only_counts_my_records(self):
+        owner, member = Client(), Client()
+        owner.register('全部账本拥有者')
+        member.register('全部账本家人')
+        personal = self.ok(owner, 'POST', '/books', {'name': '全部账本个人', 'type': 'personal'})
+        family = self.ok(owner, 'POST', '/books', {'name': '全部账本家庭', 'type': 'family'})
+        member_personal = self.ok(member, 'POST', '/books', {'name': '家人的个人账本', 'type': 'personal'})
+        invitation = self.ok(owner, 'POST', f'/books/{family["id"]}/invitations', {'phone': member.phone})
+        self.ok(member, 'POST', f'/invitations/{invitation["id"]}/accept')
+
+        def add_record(client, book, cents, category, note):
+            return self.ok(client, 'POST', f'/books/{book["id"]}/records', {
+                'type': 'expense', 'amountCents': cents, 'category': category,
+                'occurredAt': '2026-11-16T04:30:00.000Z', 'note': note, 'paymentSource': '微信',
+            })
+        add_record(owner, personal, 100, '早餐', '拥有者个人')
+        add_record(owner, family, 200, '午餐', '拥有者家庭')
+        add_record(member, family, 300, '晚餐', '家人家庭')
+        add_record(member, member_personal, 400, '购物', '家人个人')
+
+        owner_view = self.ok(owner, 'GET', '/analysis?period=month&date=2026-11-16')
+        self.assertEqual((owner_view['expenseCents'], owner_view['recordCount']), (300, 2))
+        self.assertEqual(owner_view['balanceCents'], -300)
+        self.assertEqual(owner_view['members'], [])
+        owner_books = {item['name']: item for item in owner_view['books']}
+        self.assertEqual(set(owner_books), {'全部账本个人', '全部账本家庭'})
+        self.assertEqual((owner_books['全部账本个人']['expenseCents'], owner_books['全部账本个人']['recordCount']),
+                         (100, 1))
+        self.assertEqual((owner_books['全部账本家庭']['expenseCents'], owner_books['全部账本家庭']['recordCount']),
+                         (200, 1))
+
+        member_view = self.ok(member, 'GET', '/analysis?period=month&date=2026-11-16')
+        self.assertEqual((member_view['expenseCents'], member_view['recordCount']), (700, 2))
+        self.assertEqual({item['name'] for item in member_view['books']},
+                         {'全部账本家庭', '家人的个人账本'})
+        self.denied(member, 'GET', '/analysis?period=decade', codes=(400,))
+
+        self.ok(owner, 'DELETE', f'/books/{family["id"]}')
+        self.ok(owner, 'DELETE', f'/books/{personal["id"]}')
+        self.ok(member, 'DELETE', f'/books/{member_personal["id"]}')
 
     def test_filters_integer_money_and_calendar_analysis(self):
         user = Client()

@@ -25,6 +25,16 @@ local function record_out(r)
  return {id=r._id,bookId=r.bookId,createdBy=r.createdBy,type=r.type,amountCents=r.amountCents,category=r.category,occurredAt=r.occurredAt,note=r.note,paymentSource=r.paymentSource,createdAt=r.createdAt,updatedAt=r.updatedAt}
 end
 local function contains(t,id) for _,x in ipairs(t or {}) do if x==id then return true end end; return false end
+local function users_by_ids(ids)
+ local map,order,seen={},{},{}
+ for _,id in ipairs(ids or {}) do
+  if id and not seen[id] then seen[id]=true; order[#order+1]=id end
+ end
+ if #order>0 then
+  for _,x in ipairs(db.find('users',{_id={['$in']=bson.array(order)}})) do map[x._id]=x end
+ end
+ return map,order
+end
 local function missing() v.error(404,'NOT_FOUND','请求的资源不存在') end
 local function denied() v.error(403,'FORBIDDEN','没有权限进行此操作') end
 local function conflict(message) v.error(409,'CONFLICT',message) end
@@ -363,6 +373,7 @@ end
 local function record_filter(id,args)
  local f={bookId=id}
  if args.type then f.type=v.enum(args.type,'收支类型',{'income','expense'}) end
+ if args.createdBy then f.createdBy=v.id(args.createdBy) end
  if args.category then f.category=v.text(args.category,'分类',1,40,false) end
  if args.from or args.to then
   local bounds={}; local a,b
@@ -385,12 +396,25 @@ local function page_value(s,default,max,name)
  return v.integer(tonumber(s),name,1,max)
 end
 local function records_list(id,u)
- book_view(id,u)
- local args=query({from=true,to=true,type=true,category=true,q=true,page=true,pageSize=true})
+ local b=book_view(id,u)
+ local args=query({from=true,to=true,type=true,category=true,q=true,page=true,pageSize=true,createdBy=true})
  local page=page_value(args.page,1,1000000,'页码'); local size=page_value(args.pageSize,20,100,'每页条数')
- local filter=record_filter(id,args); local list=db.find('records',filter,{sort=bson.ordered({{'occurredAt',-1},{'_id',-1}}),skip=(page-1)*size,limit=size}); local out={}
- for _,r in ipairs(list) do out[#out+1]=record_out(r) end
- return {items=array(out),total=db.count('records',filter),page=page,pageSize=size}
+ local filter=record_filter(id,args)
+ local list=db.find('records',filter,{sort=bson.ordered({{'occurredAt',-1},{'_id',-1}}),skip=(page-1)*size,limit=size})
+ -- Authors come from current members plus anyone who has ever recorded here,
+ -- so historical records keep an owner even after a member leaves.
+ local ids={}
+ for _,uid in ipairs(b.memberIds or {b.ownerId}) do ids[#ids+1]=uid end
+ for _,uid in ipairs(db.distinct('records','createdBy',{bookId=id})) do ids[#ids+1]=uid end
+ local users,order=users_by_ids(ids)
+ local authors={}; for _,uid in ipairs(order) do local x=users[uid]; if x then authors[#authors+1]={id=x._id,name=x.name} end end
+ local out={}
+ for _,r in ipairs(list) do
+  local item=record_out(r); local x=users[r.createdBy]
+  if x then item.createdByName=x.name end
+  out[#out+1]=item
+ end
+ return {items=array(out),total=db.count('records',filter),page=page,pageSize=size,authors=array(authors)}
 end
 local function shares_list(id,u)
  book_access(id,u,true)
@@ -476,23 +500,89 @@ local function record_mutate(id,rid,t,u,remove)
  return record_out(changed)
 end
 local function analysis(id,u)
- book_view(id,u); local args=query({period=true,date=true})
+ local b=book_view(id,u); local args=query({period=true,date=true,member=true})
  local period=v.enum(args.period or 'month','分析周期',{'week','month','year'})
+ local member=args.member and v.id(args.member)
  local result=date.range(period,args.date,ngx.time()); if not result then v.bad('分析日期必须为有效YYYY-MM-DD') end
  local buckets={}; for _,bucket in ipairs(result.trend) do buckets[bucket.label]=bucket end
  local categories={}
+ local member_stats,member_order,seen={},{},{}
+ for _,uid in ipairs(b.memberIds or {b.ownerId}) do
+  if not seen[uid] then seen[uid]=true; member_order[#member_order+1]=uid
+   member_stats[uid]={userId=uid,incomeCents=0,expenseCents=0,recordCount=0} end
+ end
  db.each('records',{bookId=id,occurredAt={['$gte']=result.from,['$lt']=result.to}},nil,function(r)
   local key=r.type=='income' and 'incomeCents' or 'expenseCents'
-  -- Fail explicitly rather than emit silently imprecise financial totals.
-  if result[key]+r.amountCents>9007199254740991 then v.error(422,'AMOUNT_OVERFLOW','统计金额超出安全范围') end
-  result[key]=result[key]+r.amountCents; result.recordCount=result.recordCount+1
-  local bucket=buckets[date.bucket(r.occurredAt,period)]; if bucket then bucket[key]=bucket[key]+r.amountCents end
-  if r.type=='expense' then local c=categories[r.category] or {category=r.category,amountCents=0,count=0}; c.amountCents=c.amountCents+r.amountCents; c.count=c.count+1; categories[r.category]=c end
+  -- Totals, trend and category ranking honor an optional member filter.
+  if not member or r.createdBy==member then
+   -- Fail explicitly rather than emit silently imprecise financial totals.
+   if result[key]+r.amountCents>9007199254740991 then v.error(422,'AMOUNT_OVERFLOW','统计金额超出安全范围') end
+   result[key]=result[key]+r.amountCents; result.recordCount=result.recordCount+1
+   local bucket=buckets[date.bucket(r.occurredAt,period)]; if bucket then bucket[key]=bucket[key]+r.amountCents end
+   if r.type=='expense' then local c=categories[r.category] or {category=r.category,amountCents=0,count=0}; c.amountCents=c.amountCents+r.amountCents; c.count=c.count+1; categories[r.category]=c end
+  end
+  -- Per-member totals are computed for the whole period even when filtered.
+  local s=member_stats[r.createdBy]
+  if not s then
+   s={userId=r.createdBy,incomeCents=0,expenseCents=0,recordCount=0}
+   member_stats[r.createdBy]=s; member_order[#member_order+1]=r.createdBy
+  end
+  if s[key]+r.amountCents>9007199254740991 then v.error(422,'AMOUNT_OVERFLOW','统计金额超出安全范围') end
+  s[key]=s[key]+r.amountCents; s.recordCount=s.recordCount+1
  end)
  result.balanceCents=result.incomeCents-result.expenseCents
  for _,c in pairs(categories) do result.categories[#result.categories+1]=c end
  table.sort(result.categories,function(a,b) if a.amountCents==b.amountCents then return a.category<b.category end; return a.amountCents>b.amountCents end)
- result.categories=array(result.categories); return result
+ result.categories=array(result.categories)
+ local users=users_by_ids(member_order)
+ local members={}
+ for _,uid in ipairs(member_order) do
+  local s=member_stats[uid]; local x=users[uid]
+  s.name=x and x.name or '已退出成员'
+  s.balanceCents=s.incomeCents-s.expenseCents
+  members[#members+1]=s
+ end
+ result.members=array(members)
+ return result
+end
+local function analysis_all(u)
+ local args=query({period=true,date=true})
+ local period=v.enum(args.period or 'month','分析周期',{'week','month','year'})
+ local result=date.range(period,args.date,ngx.time()); if not result then v.bad('分析日期必须为有效YYYY-MM-DD') end
+ local buckets={}; for _,bucket in ipairs(result.trend) do buckets[bucket.label]=bucket end
+ local categories={}
+ local book_stats,book_order={},{}
+ -- Aggregate only books the account owns or belongs to, and only records this
+ -- account created. Read-only shared books are deliberately excluded.
+ for _,b in ipairs(books_available(u)) do
+  if is_member(b,u) then
+   book_order[#book_order+1]=b._id
+   book_stats[b._id]={bookId=b._id,name=b.name,incomeCents=0,expenseCents=0,recordCount=0}
+  end
+ end
+ if #book_order>0 then
+  db.each('records',{bookId={['$in']=bson.array(book_order)},createdBy=u._id,occurredAt={['$gte']=result.from,['$lt']=result.to}},nil,function(r)
+   local key=r.type=='income' and 'incomeCents' or 'expenseCents'
+   if result[key]+r.amountCents>9007199254740991 then v.error(422,'AMOUNT_OVERFLOW','统计金额超出安全范围') end
+   result[key]=result[key]+r.amountCents; result.recordCount=result.recordCount+1
+   local bucket=buckets[date.bucket(r.occurredAt,period)]; if bucket then bucket[key]=bucket[key]+r.amountCents end
+   if r.type=='expense' then local c=categories[r.category] or {category=r.category,amountCents=0,count=0}; c.amountCents=c.amountCents+r.amountCents; c.count=c.count+1; categories[r.category]=c end
+   local s=book_stats[r.bookId]
+   if s then
+    if s[key]+r.amountCents>9007199254740991 then v.error(422,'AMOUNT_OVERFLOW','统计金额超出安全范围') end
+    s[key]=s[key]+r.amountCents; s.recordCount=s.recordCount+1
+   end
+  end)
+ end
+ result.balanceCents=result.incomeCents-result.expenseCents
+ for _,c in pairs(categories) do result.categories[#result.categories+1]=c end
+ table.sort(result.categories,function(a,b) if a.amountCents==b.amountCents then return a.category<b.category end; return a.amountCents>b.amountCents end)
+ result.categories=array(result.categories)
+ local books={}
+ for _,bid in ipairs(book_order) do local s=book_stats[bid]; s.balanceCents=s.incomeCents-s.expenseCents; books[#books+1]=s end
+ result.books=array(books)
+ result.members=array({})
+ return result
 end
 local function health()
  local mongo_ok=pcall(function() db.command('ping',{}); index_ready() end)
@@ -517,6 +607,7 @@ function M.dispatch()
  if path=='/api/auth/login' and method=='POST' then return login(t) end
  if path=='/api/auth/logout' and method=='POST' then v.fields(t,{}); sessions.destroy(sessions.token()); return {ok=true} end
  if not u then u,token=auth() end
+ if path=='/api/analysis' and method=='GET' then return analysis_all(u) end
  if path=='/api/shares' and method=='GET' then return received_shares(u) end
  local sid,action=path:match('^/api/shares/([^/]+)/([^/]+)$')
  if sid and method=='POST' and (action=='accept' or action=='reject') then v.fields(t,{}); return share_respond(sid,u,action=='accept') end

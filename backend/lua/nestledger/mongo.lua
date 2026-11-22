@@ -92,6 +92,9 @@ function M.delete(collection,filter,multi)
  return M.command('delete',{delete=collection,deletes=bson.array({{q=filter,limit=multi and 0 or 1}}),writeConcern={w=1}}).n
 end
 function M.count(collection,filter) return M.command('count',{count=collection,query=filter or {}}).n end
+function M.distinct(collection,key,filter)
+ return M.command('distinct',{distinct=collection,key=key,query=filter or {}}).values or {}
+end
 function M.indexes()
  local indexes={
   users={{key={phone=1},name='unique_phone',unique=true}},
