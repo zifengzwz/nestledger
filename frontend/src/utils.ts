@@ -55,3 +55,44 @@ export const canEdit = (
 ) =>
   Boolean(book && !book.readOnly) &&
   (record.createdBy === userId || canManage(book, userId));
+
+
+const categoryColors: Record<string, string> = {
+  餐饮美食: "#c2410c",
+  日用百货: "#0369a1",
+  交通出行: "#0f766e",
+  住房物业: "#7c3aed",
+  购物消费: "#be185d",
+  休闲娱乐: "#b45309",
+  医疗健康: "#b91c1c",
+  教育学习: "#1d4ed8",
+  人情往来: "#a21caf",
+  其他支出: "#475569",
+  工资薪酬: "#15803d",
+  奖金收入: "#a16207",
+  投资理财: "#0e7490",
+  兼职收入: "#6d28d9",
+  礼金收入: "#db2777",
+  其他收入: "#4b5563",
+};
+const categoryPalette = [
+  "#0f766e",
+  "#1d4ed8",
+  "#b45309",
+  "#be185d",
+  "#7c3aed",
+  "#15803d",
+  "#c2410c",
+  "#0e7490",
+  "#a21caf",
+  "#475569",
+];
+/** Stable colour for a major category: fixed defaults, deterministic for custom names. */
+export function categoryColor(name: string) {
+  if (Object.prototype.hasOwnProperty.call(categoryColors, name))
+    return categoryColors[name];
+  let hash = 0;
+  for (const char of name)
+    hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
+  return categoryPalette[hash % categoryPalette.length];
+}

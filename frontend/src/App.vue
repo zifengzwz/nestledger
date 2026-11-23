@@ -48,6 +48,7 @@ import {
   isoShanghai,
   nextDayISO,
   recordDate,
+  categoryColor,
   canManage,
   canEdit,
 } from "./utils";
@@ -1478,7 +1479,7 @@ onMounted(initialize);
                     </div>
                     <div v-else class="category-list">
                       <div
-                        v-for="(c, i) in analysis.categories"
+                        v-for="c in analysis.categories"
                         :key="c.category"
                         class="category-item"
                       >
@@ -1498,13 +1499,7 @@ onMounted(initialize);
                               width:
                                 (c.amountCents / analysis.expenseCents) * 100 +
                                 '%',
-                              background: [
-                                'var(--accent)',
-                                'var(--income)',
-                                'var(--expense)',
-                                'var(--accent-light)',
-                                'var(--text-soft)',
-                              ][i % 5],
+                              background: categoryColor(c.category),
                             }"
                           ></span>
                         </div>
@@ -1792,7 +1787,12 @@ onMounted(initialize);
                     >
                       <td>
                         <div class="record-description">
-                          <span class="record-icon" :class="record.type"
+                          <span
+                            class="record-icon"
+                            :class="record.type"
+                            :style="{
+                              '--category-color': categoryColor(record.category),
+                            }"
                             ><OptionIcon
                               :kind="record.type"
                               :name="record.category"

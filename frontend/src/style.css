@@ -1357,12 +1357,9 @@ tbody tr:last-child td {
   height: 35px;
   flex-shrink: 0;
   border-radius: 11px;
-  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
-  color: var(--accent);
-}
-.record-icon.income {
-  background: var(--income-soft);
-  color: var(--income-strong);
+  background: color-mix(in srgb, var(--category-color, var(--accent)) 15%, var(--surface));
+  color: var(--category-color, var(--accent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--category-color, var(--accent)) 22%, transparent);
 }
 .record-description strong {
   font-size: 12px;

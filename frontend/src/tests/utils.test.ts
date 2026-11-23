@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canEdit,
   canManage,
+  categoryColor,
   isoShanghai,
   localDateTime,
   money,
@@ -32,6 +33,37 @@ describe("Shanghai dates independent of device timezone", () => {
     const date = new Date("2026-11-15T18:05:00Z");
     expect(shanghaiDay(date)).toBe("2026-11-16");
     expect(localDateTime(date)).toBe("2026-11-16T02:05");
+  });
+});
+describe("category colours", () => {
+  it("gives every default major category a distinct, stable colour", () => {
+    const names = [
+      "餐饮美食",
+      "日用百货",
+      "交通出行",
+      "住房物业",
+      "购物消费",
+      "休闲娱乐",
+      "医疗健康",
+      "教育学习",
+      "人情往来",
+      "其他支出",
+      "工资薪酬",
+      "奖金收入",
+      "投资理财",
+      "兼职收入",
+      "礼金收入",
+      "其他收入",
+    ];
+    const colors = names.map(categoryColor);
+    expect(new Set(colors).size).toBe(names.length);
+    expect(categoryColor("餐饮美食")).toBe("#c2410c");
+    expect(categoryColor("交通出行")).toBe("#0f766e");
+  });
+  it("derives deterministic palette colours for custom categories", () => {
+    expect(categoryColor("宠物开销")).toBe(categoryColor("宠物开销"));
+    expect(categoryColor("宠物开销")).toMatch(/^#[0-9a-f]{6}$/);
+    expect(categoryColor("")).toMatch(/^#[0-9a-f]{6}$/);
   });
 });
 describe("visible permission controls", () => {
