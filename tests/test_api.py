@@ -441,14 +441,16 @@ class PlatformTests(unittest.TestCase):
         before_options = self.ok(owner, 'GET', '/record-options')
         before_books = self.ok(owner, 'GET', '/books')
         rows = [
-            {'type': 'expense', 'amountCents': 99999999999, 'category': '餐饮',
+            {'type': 'expense', 'amountCents': 99999999999, 'category': '餐饮', 'subcategory': '午餐',
              'occurredAt': '2026-11-17T04:30:00.123Z', 'note': '=SUM(1,2)\n多行, "备注"', 'paymentSource': '微信'},
-            {'type': 'income', 'amountCents': 123, 'category': '工资',
+            {'type': 'income', 'amountCents': 123, 'category': '工资', 'subcategory': '',
              'occurredAt': '2026-11-16T16:00:00.000Z', 'note': '', 'paymentSource': '现金'},
-            {'type': 'expense', 'amountCents': 1, 'category': '交通',
+            {'type': 'expense', 'amountCents': 1, 'category': '交通', 'subcategory': '',
              'occurredAt': '2026-11-17T04:30:00.123Z', 'note': '@text', 'paymentSource': '银行卡'},
         ]
         created = [self.ok(owner, 'POST', f'/books/{fid}/records', row) for row in rows]
+        self.assertEqual(self.ok(member, 'GET',
+            f'/books/{fid}/records?subcategory=' + urllib.parse.quote('午餐'))['total'], 1)
         expected = [{key: record[key] for key in rows[0]}
                     for record in sorted(created, key=lambda r: (r['occurredAt'], r['id']))]
         exported = self.ok(member, 'GET', f'/books/{fid}/export')
@@ -612,7 +614,18 @@ class PlatformTests(unittest.TestCase):
         fields = {'expenseCategory': 'expenseCategories', 'incomeCategory': 'incomeCategories',
                   'paymentSource': 'paymentSources'}
         fallback_icons = {'expenseCategory': 'tag', 'incomeCategory': 'coins', 'paymentSource': 'wallet'}
-        full_defaults = dict(defaults, icons={kind: {} for kind in fields})
+        baseline = self.ok(owner, 'GET', '/record-options')
+        self.assertEqual(baseline['expenseSubcategories']['餐饮美食'],
+                         ['早餐', '午餐', '晚餐', '外卖', '咖啡饮品', '零食', '水果'])
+        self.assertEqual(baseline['incomeSubcategories']['工资薪酬'],
+                         ['基本工资', '奖金', '加班费', '补贴'])
+        self.assertEqual(baseline['customExpenseSubcategories'], {})
+        self.assertEqual(baseline['customIncomeSubcategories'], {})
+        full_defaults = dict(defaults, icons={kind: {} for kind in fields},
+                             expenseSubcategories=baseline['expenseSubcategories'],
+                             incomeSubcategories=baseline['incomeSubcategories'],
+                             customExpenseSubcategories={},
+                             customIncomeSubcategories={})
         self.denied(Client(), 'GET', '/record-options', codes=(401,))
         self.denied(Client(), 'POST', '/record-options', {'kind': 'expenseCategory', 'name': '测试'}, codes=(401,))
         self.assertEqual(self.ok(owner, 'GET', '/record-options'), full_defaults)
@@ -628,18 +641,28 @@ class PlatformTests(unittest.TestCase):
         })
         expected = {key: list(value) for key, value in defaults.items()}
         expected['icons'] = {kind: {} for kind in fields}
+        expected['expenseSubcategories'] = {key: list(value) for key, value in baseline['expenseSubcategories'].items()}
+        expected['incomeSubcategories'] = {key: list(value) for key, value in baseline['incomeSubcategories'].items()}
+        expected['customExpenseSubcategories'] = {}
+        expected['customIncomeSubcategories'] = {}
+        def add_expected_major(kind, name, icon):
+            field = fields[kind]
+            expected[field].append(name)
+            expected['icons'][kind][name] = icon
+            if kind == 'expenseCategory':
+                expected['expenseSubcategories'][name] = []
+            elif kind == 'incomeCategory':
+                expected['incomeSubcategories'][name] = []
         for kind, field in fields.items():
             status, body = owner.request('POST', '/record-options', {'kind': kind, 'name': '  自选名称\t '})
             self.assertEqual(status, 201, body)
-            expected[field].append('自选名称')
-            expected['icons'][kind]['自选名称'] = fallback_icons[kind]
+            add_expected_major(kind, '自选名称', fallback_icons[kind])
             self.assertEqual(body['data'], expected)  # Each category kind is independent.
             self.denied(owner, 'POST', '/record-options', {'kind': kind, 'name': ' 自选名称 '}, codes=(409,))
             for name in defaults[field]:
                 self.denied(owner, 'POST', '/record-options', {'kind': kind, 'name': ' ' + name + ' '}, codes=(409,))
         # UTF-8 character count, not byte count; exactly 40 Chinese characters is valid.
-        expected['expenseCategories'].append('中' * 40)
-        expected['icons']['expenseCategory']['中' * 40] = 'tag'
+        add_expected_major('expenseCategory', '中' * 40, 'tag')
         self.assertEqual(self.ok(owner, 'POST', '/record-options',
                                  {'kind': 'expenseCategory', 'name': '中' * 40}), expected)
         invalid = ({}, [], 'string', {'kind': 'oops', 'name': 'x'}, {'kind': {}, 'name': 'x'},
@@ -678,20 +701,79 @@ class PlatformTests(unittest.TestCase):
                           'bike', 'car', 'book-open', 'music', 'camera', 'sparkles', 'heart', 'shirt', 'wrench']
         for icon in selected_icons:
             name = '图标-' + icon
-            expected['expenseCategories'].append(name)
-            expected['icons']['expenseCategory'][name] = icon
+            add_expected_major('expenseCategory', name, icon)
             self.assertEqual(self.ok(owner, 'POST', '/record-options',
                                      {'kind': 'expenseCategory', 'name': name, 'icon': icon}), expected)
         for kind, name, icon in (('expenseCategory', '宠物.护理', 'paw-print'),
                                  ('incomeCategory', '$礼金.收入', 'gift'),
                                  ('paymentSource', '__proto__', 'credit-card')):
-            expected[fields[kind]].append(name)
-            expected['icons'][kind][name] = icon
+            add_expected_major(kind, name, icon)
             self.assertEqual(self.ok(owner, 'POST', '/record-options',
                                      {'kind': kind, 'name': name, 'icon': icon}), expected)
+        # Subcategories are scoped to a parent and isolated per account.
+        sub = self.ok(owner, 'POST', '/record-options',
+                      {'kind': 'expenseSubcategory', 'parent': '餐饮美食', 'name': '自选小分类'})
+        expected['expenseSubcategories']['餐饮美食'].append('自选小分类')
+        expected['customExpenseSubcategories']['餐饮美食'] = ['自选小分类']
+        self.assertEqual(sub, expected)
+        self.denied(owner, 'POST', '/record-options',
+                    {'kind': 'expenseSubcategory', 'parent': '餐饮美食', 'name': '自选小分类'}, codes=(409,))
+        self.denied(owner, 'POST', '/record-options',
+                    {'kind': 'expenseSubcategory', 'parent': '餐饮美食', 'name': '早餐'}, codes=(409,))
+        self.denied(owner, 'POST', '/record-options',
+                    {'kind': 'expenseSubcategory', 'parent': '不存在', 'name': '新小分类'}, codes=(400,))
+        self.denied(owner, 'POST', '/record-options',
+                    {'kind': 'expenseSubcategory', 'parent': '餐饮美食', 'name': '新小分类',
+                     'icon': 'tag'}, codes=(400,))
+        income_sub = self.ok(owner, 'POST', '/record-options',
+                             {'kind': 'incomeSubcategory', 'parent': '工资薪酬', 'name': '自选收入小分类'})
+        expected['incomeSubcategories']['工资薪酬'].append('自选收入小分类')
+        expected['customIncomeSubcategories']['工资薪酬'] = ['自选收入小分类']
+        self.assertEqual(income_sub, expected)
+        custom_sub = self.ok(owner, 'POST', '/record-options',
+                             {'kind': 'expenseSubcategory', 'parent': '自选名称', 'name': '自选大分类的子项'})
+        expected['expenseSubcategories']['自选名称'].append('自选大分类的子项')
+        expected['customExpenseSubcategories']['自选名称'] = ['自选大分类的子项']
+        self.assertEqual(custom_sub, expected)
+        kept = self.ok(owner, 'POST', path, {
+            'type': 'expense', 'amountCents': 1, 'category': '自选名称',
+            'subcategory': '自选大分类的子项', 'occurredAt': '2026-11-16T00:00:00Z',
+            'note': '删除选项后保留', 'paymentSource': '自选名称',
+        })
+        self.denied(owner, 'POST', '/record-options/delete',
+                    {'kind': 'expenseCategory', 'name': '餐饮美食'}, codes=(409,))
+        self.denied(owner, 'POST', '/record-options/delete',
+                    {'kind': 'expenseCategory', 'name': '不存在'}, codes=(404,))
+        self.denied(owner, 'POST', '/record-options/delete',
+                    {'kind': 'expenseSubcategory', 'parent': '餐饮美食', 'name': '早餐'}, codes=(409,))
+        self.denied(owner, 'POST', '/record-options/delete',
+                    {'kind': 'expenseSubcategory', 'parent': '餐饮美食', 'name': '不存在'}, codes=(404,))
+        self.denied(owner, 'POST', '/record-options/delete',
+                    {'kind': 'paymentSource', 'name': '微信'}, codes=(409,))
+        deleted_sub = self.ok(owner, 'POST', '/record-options/delete',
+                              {'kind': 'expenseSubcategory', 'parent': '餐饮美食', 'name': '自选小分类'})
+        expected['expenseSubcategories']['餐饮美食'].remove('自选小分类')
+        del expected['customExpenseSubcategories']['餐饮美食']
+        self.assertEqual(deleted_sub, expected)
+        deleted_payment = self.ok(owner, 'POST', '/record-options/delete',
+                                  {'kind': 'paymentSource', 'name': '自选名称'})
+        expected['paymentSources'].remove('自选名称')
+        expected['icons']['paymentSource'].pop('自选名称')
+        self.assertEqual(deleted_payment, expected)
+        deleted_category = self.ok(owner, 'POST', '/record-options/delete',
+                                   {'kind': 'expenseCategory', 'name': '自选名称'})
+        expected['expenseCategories'].remove('自选名称')
+        expected['icons']['expenseCategory'].pop('自选名称')
+        expected['expenseSubcategories'].pop('自选名称')
+        del expected['customExpenseSubcategories']['自选名称']
+        self.assertEqual(deleted_category, expected)
+        kept_rows = self.ok(owner, 'GET', path)['items']
+        kept_row = next(item for item in kept_rows if item['id'] == kept['id'])
+        self.assertEqual((kept_row['category'], kept_row['subcategory'], kept_row['paymentSource']),
+                         ('自选名称', '自选大分类的子项', '自选名称'))
         self.assertEqual(self.ok(owner, 'GET', '/record-options'), expected)
         self.assertEqual(self.ok(other, 'GET', '/record-options'), full_defaults)
-        self.assertEqual(without_attribution(self.ok(other, 'GET', path)['items']), [historical])
+        self.assertCountEqual(without_attribution(self.ok(other, 'GET', path)['items']), [historical, kept])
         other_options = self.ok(other, 'POST', '/record-options',
                                 {'kind': 'paymentSource', 'name': '自选名称', 'icon': 'qr-code'})
         self.assertEqual(other_options['icons'], {'expenseCategory': {}, 'incomeCategory': {},
@@ -738,7 +820,7 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(len(final), len(defaults[field]) + 50)
             self.assertEqual(len(final), len(set(final)))
             self.denied(owner, 'POST', '/record-options', {'kind': kind, 'name': '超过上限'}, codes=(409,))
-        self.assertEqual(without_attribution(self.ok(other, 'GET', path)['items']), [historical])
+        self.assertCountEqual(without_attribution(self.ok(other, 'GET', path)['items']), [historical, kept])
         self.ok(owner, 'DELETE', f'/books/{family["id"]}')
 
     def test_unregistered_phone_rejected_then_registered_user_invitation_and_rejection(self):

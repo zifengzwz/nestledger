@@ -59,6 +59,7 @@ export interface LedgerRecord {
   type: "income" | "expense";
   amountCents: number;
   category: string;
+  subcategory?: string;
   occurredAt: string;
   note: string;
   paymentSource: string;
@@ -69,6 +70,10 @@ export interface RecordOptions {
   expenseCategories: string[];
   incomeCategories: string[];
   paymentSources: string[];
+  expenseSubcategories?: Record<string, string[]>;
+  incomeSubcategories?: Record<string, string[]>;
+  customExpenseSubcategories?: Record<string, string[]>;
+  customIncomeSubcategories?: Record<string, string[]>;
   icons?: Partial<Record<RecordOptionKind, Record<string, string>>>;
 }
 export type RecordOptionKind =
@@ -93,7 +98,12 @@ export interface Analysis {
   balanceCents: number;
   recordCount: number;
   trend: { label: string; incomeCents: number; expenseCents: number }[];
-  categories: { category: string; amountCents: number; count: number }[];
+  categories: {
+    category: string;
+    amountCents: number;
+    count: number;
+    subcategories?: { name: string; amountCents: number; count: number }[];
+  }[];
   members: AnalysisMember[];
   books?: AnalysisBook[];
 }

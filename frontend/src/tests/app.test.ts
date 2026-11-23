@@ -1,7 +1,6 @@
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../App.vue";
-import type { RecordOptions } from "../api";
 const user = {
   id: "u1",
   phone: "13800000001",
@@ -50,6 +49,13 @@ const recordOptions = {
     "其他收入",
   ],
   paymentSources: ["微信", "支付宝", "银行卡", "现金", "其他"],
+  expenseSubcategories: {
+    餐饮美食: ["早餐", "午餐", "晚餐"],
+    交通出行: ["地铁", "打车"],
+  },
+  incomeSubcategories: {
+    工资薪酬: ["基本工资", "奖金"],
+  },
 };
 let wrapper: VueWrapper | undefined;
 function setup(authenticated = true) {
@@ -177,116 +183,6 @@ describe("application integrated API flows", () => {
       if (fails) expect(wrapper.text()).toContain("顺序保存失败");
     },
   );
-  it("adds a persisted category without submitting or losing the draft record", async () => {
-    const transport = setup();
-    const base = transport.getMockImplementation()!;
-    let options: RecordOptions = recordOptions;
-    transport.mockImplementation(async (path, request) => {
-      if (path === "/api/record-options") {
-        if (request.method === "POST")
-          options = {
-            ...recordOptions,
-            expenseCategories: [...recordOptions.expenseCategories, "宠物开销"],
-            icons: { expenseCategory: { 宠物开销: "paw-print" } },
-          };
-        return new Response(JSON.stringify({ data: options }), {
-          status: request.method === "POST" ? 201 : 200,
-        });
-      }
-      return base(path, request);
-    });
-    wrapper = mount(App, { attachTo: document.body });
-    await flushPromises();
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "记一笔")!
-      .trigger("click");
-    await flushPromises();
-    await wrapper.get('[aria-label="金额（元）"]').setValue("30.00");
-    await wrapper.get('[aria-label="添加分类"]').trigger("click");
-    await wrapper.get("#custom-option-name").setValue("宠物开销");
-    await wrapper.get('[aria-label="图标：宠物"]').trigger("click");
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "保存选项")!
-      .trigger("click");
-    await flushPromises();
-    const call = transport.mock.calls.find(
-      (call) => call[0] === "/api/record-options" && call[1].method === "POST",
-    );
-    expect(JSON.parse(String(call?.[1].body))).toEqual({
-      kind: "expenseCategory",
-      name: "宠物开销",
-      icon: "paw-print",
-    });
-    expect(
-      wrapper
-        .get('.select-current-icon[data-icon-kind="expense"]')
-        .attributes("data-option-icon"),
-    ).toBe("paw-print");
-    expect(
-      (wrapper.get('input[role="combobox"]').element as HTMLInputElement).value,
-    ).toBe("宠物开销");
-    expect(
-      (wrapper.get('[aria-label="金额（元）"]').element as HTMLInputElement)
-        .value,
-    ).toBe("30.00");
-    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
-    expect(wrapper.find(".custom-option-editor").exists()).toBe(false);
-    expect(
-      transport.mock.calls.some(
-        (call) =>
-          call[0] === "/api/books/b1/records" && call[1].method === "POST",
-      ),
-    ).toBe(false);
-  });
-  it("keeps the custom-option editor open on duplicate errors", async () => {
-    const transport = setup();
-    const base = transport.getMockImplementation()!;
-    transport.mockImplementation(async (path, request) =>
-      path === "/api/record-options" && request.method === "POST"
-        ? new Response(
-            JSON.stringify({
-              error: { code: "CONFLICT", message: "该选项已存在" },
-            }),
-            { status: 409 },
-          )
-        : base(path, request),
-    );
-    wrapper = mount(App, { attachTo: document.body });
-    await flushPromises();
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "记一笔")!
-      .trigger("click");
-    await flushPromises();
-    await wrapper.get('[aria-label="添加支付方式"]').trigger("click");
-    await wrapper.get("#custom-option-name").setValue("微信");
-    await wrapper
-      .get("#custom-option-name")
-      .trigger("keydown", { key: "Enter", isComposing: true });
-    await flushPromises();
-    expect(
-      transport.mock.calls.some(
-        (call) =>
-          call[0] === "/api/record-options" && call[1].method === "POST",
-      ),
-    ).toBe(false);
-    await wrapper
-      .get("#custom-option-name")
-      .trigger("keydown", { key: "Enter" });
-    await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain("已存在");
-    expect(wrapper.find(".custom-option-editor").exists()).toBe(true);
-    expect(
-      (wrapper.get("#custom-option-name").element as HTMLInputElement).value,
-    ).toBe("微信");
-    await wrapper
-      .findAll("button")
-      .find((button) => button.text() === "取消添加")!
-      .trigger("click");
-    expect(wrapper.find(".custom-option-editor").exists()).toBe(false);
-  });
   it("creates a real API record with exact integer cents and Shanghai timestamp", async () => {
     const fetch = setup();
     wrapper = mount(App, { attachTo: document.body });
@@ -309,9 +205,97 @@ describe("application integrated API flows", () => {
       amountCents: 29,
       occurredAt: "2026-11-15T16:00:00.000Z",
       category: "餐饮美食",
+      subcategory: "早餐",
       type: "expense",
     });
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+  });
+  it("defaults a new record to the last recorded day, then to today", async () => {
+    const transport = setup();
+    const base = transport.getMockImplementation()!;
+    const existing = {
+      id: "r9",
+      bookId: "b1",
+      createdBy: "u1",
+      type: "expense",
+      amountCents: 100,
+      category: "餐饮美食",
+      subcategory: "早餐",
+      occurredAt: "2026-11-16T04:00:00Z",
+      note: "",
+      paymentSource: "微信",
+      createdAt: "2026-11-16T04:00:00Z",
+      updatedAt: "2026-11-16T04:00:00Z",
+    };
+    transport.mockImplementation(async (path, init) =>
+      path.startsWith("/api/books/b1/records?") && init.method === "GET"
+        ? new Response(
+            JSON.stringify({
+              data: { items: [existing], total: 1, page: 1, pageSize: 20 },
+            }),
+          )
+        : base(path, init),
+    );
+    wrapper = mount(App, { attachTo: document.body });
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "记一笔")!
+      .trigger("click");
+    await flushPromises();
+    expect(
+      (wrapper.get('[role="dialog"] input[type="date"]').element as HTMLInputElement)
+        .value,
+    ).toBe("2026-11-16");
+    await wrapper
+      .get('[role="dialog"] input[type="date"]')
+      .setValue("2026-11-20");
+    await wrapper.get('[aria-label="金额（元）"]').setValue("1.00");
+    await wrapper.get('[role="dialog"] form').trigger("submit");
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "记一笔")!
+      .trigger("click");
+    await flushPromises();
+    expect(
+      (wrapper.get('[role="dialog"] input[type="date"]').element as HTMLInputElement)
+        .value,
+    ).toBe("2026-11-20");
+  });
+  it("records the selected subcategory under its major category", async () => {
+    const transport = setup();
+    const base = transport.getMockImplementation()!;
+    transport.mockImplementation(async (path, init) =>
+      path === "/api/books/b1/records" && init.method === "POST"
+        ? new Response(JSON.stringify({ data: { ok: true } }), {
+            status: 201,
+          })
+        : base(path, init),
+    );
+    wrapper = mount(App, { attachTo: document.body });
+    await flushPromises();
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "记一笔")!
+      .trigger("click");
+    await flushPromises();
+    const subField = wrapper
+      .findAll(".select-input-field")
+      .find((field) => field.text().includes("小分类"))!;
+    await subField.find('input[role="combobox"]').setValue("午餐");
+    await wrapper.get('[aria-label="金额（元）"]').setValue("12.00");
+    await wrapper.get('[role="dialog"] form').trigger("submit");
+    await flushPromises();
+    const call = transport.mock.calls.find(
+      (item) =>
+        item[0] === "/api/books/b1/records" && item[1].method === "POST",
+    );
+    expect(JSON.parse(String(call?.[1].body))).toMatchObject({
+      category: "餐饮美食",
+      subcategory: "午餐",
+      amountCents: 1200,
+    });
   });
   it("limits rapid-operation notifications to the newest three", async () => {
     const transport = setup();

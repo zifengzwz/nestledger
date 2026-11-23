@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
-import { Check, ChevronDown, Plus } from "lucide-vue-next";
+import { Check, ChevronDown, Plus, Trash2 } from "lucide-vue-next";
 import OptionIcon from "./OptionIcon.vue";
 import type { OptionIconKind } from "../optionIcons";
 
@@ -13,14 +13,16 @@ const props = withDefaults(
     required?: boolean;
     disabled?: boolean;
     allowAdd?: boolean;
+    removable?: boolean;
     iconKind?: OptionIconKind;
     iconOverrides?: Record<string, string>;
   }>(),
-  { required: true, disabled: false },
+  { required: true, disabled: false, removable: false },
 );
 const emit = defineEmits<{
   "update:modelValue": [value: string];
   add: [suggestedName: string];
+  remove: [];
 }>();
 function savedIcon(name: string) {
   const value = name.trim();
@@ -34,6 +36,11 @@ function requestAdd() {
   open.value = false;
   const name = props.modelValue.trim();
   emit("add", props.options.includes(name) ? "" : name);
+}
+function requestRemove() {
+  if (props.disabled) return;
+  open.value = false;
+  emit("remove");
 }
 const id = useId();
 const root = ref<HTMLElement>();
@@ -125,16 +132,28 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", outside));
   <div class="select-input-field">
     <div class="select-input-heading">
       <label :for="`${id}-input`">{{ label }}</label>
-      <button
-        v-if="allowAdd"
-        type="button"
-        class="select-input-add"
-        :aria-label="`添加${label}`"
-        :disabled="disabled"
-        @click="requestAdd"
-      >
-        <Plus :size="12" />添加
-      </button>
+      <div v-if="allowAdd || removable" class="select-input-actions">
+        <button
+          v-if="allowAdd"
+          type="button"
+          class="select-input-add"
+          :aria-label="`添加${label}`"
+          :disabled="disabled"
+          @click="requestAdd"
+        >
+          <Plus :size="12" />添加
+        </button>
+        <button
+          v-if="removable"
+          type="button"
+          class="select-input-remove"
+          :aria-label="`删除${label}`"
+          :disabled="disabled"
+          @click="requestRemove"
+        >
+          <Trash2 :size="12" />删除
+        </button>
+      </div>
     </div>
     <div
       ref="root"
@@ -238,6 +257,11 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", outside));
 .select-input-heading > label {
   margin: 0;
 }
+.select-input-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .select-input-add {
   padding: 2px 4px;
   font-size: 10px;
@@ -250,6 +274,19 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", outside));
 }
 .select-input-add:hover {
   background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+.select-input-remove {
+  padding: 2px 4px;
+  font-size: 10px;
+  color: var(--danger);
+  background: transparent;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.select-input-remove:hover {
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
 }
 .select-input {
   position: relative;

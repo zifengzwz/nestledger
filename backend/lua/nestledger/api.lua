@@ -22,7 +22,7 @@ local function book_out(b,read_only,owner)
 end
 local function invite_out(i) return {id=i._id,bookId=i.bookId,bookName=i.bookName,inviterName=i.inviterName,phone=i.phone,status=i.status,createdAt=i.createdAt} end
 local function record_out(r)
- return {id=r._id,bookId=r.bookId,createdBy=r.createdBy,type=r.type,amountCents=r.amountCents,category=r.category,occurredAt=r.occurredAt,note=r.note,paymentSource=r.paymentSource,createdAt=r.createdAt,updatedAt=r.updatedAt}
+ return {id=r._id,bookId=r.bookId,createdBy=r.createdBy,type=r.type,amountCents=r.amountCents,category=r.category,subcategory=r.subcategory or '',occurredAt=r.occurredAt,note=r.note,paymentSource=r.paymentSource,createdAt=r.createdAt,updatedAt=r.updatedAt}
 end
 local function contains(t,id) for _,x in ipairs(t or {}) do if x==id then return true end end; return false end
 local function users_by_ids(ids)
@@ -196,11 +196,33 @@ local option_defaults={
  incomeCategories={'工资薪酬','奖金收入','投资理财','兼职收入','礼金收入','其他收入'},
  paymentSources={'微信','支付宝','银行卡','现金','其他'}
 }
+local subcategory_defaults={
+ expenseCategories={
+  ['餐饮美食']={'早餐','午餐','晚餐','外卖','咖啡饮品','零食','水果'},
+  ['日用百货']={'超市购物','清洁用品','厨房用品','纸品'},
+  ['交通出行']={'公交','地铁','打车','加油','停车','火车/飞机'},
+  ['住房物业']={'房租','房贷','水费','电费','燃气费','物业费','维修'},
+  ['购物消费']={'服饰','数码','家居','美妆'},
+  ['休闲娱乐']={'电影','游戏','旅行','运动','聚会'},
+  ['医疗健康']={'门诊','药品','体检','牙科'},
+  ['教育学习']={'学费','书籍','课程','培训'},
+  ['人情往来']={'红包','礼品','请客','礼金'},
+  ['其他支出']={'其他'},
+ },
+ incomeCategories={
+  ['工资薪酬']={'基本工资','奖金','加班费','补贴'},
+  ['奖金收入']={'年终奖','绩效奖','其他奖金'},
+  ['投资理财']={'利息','分红','基金收益','股票收益'},
+  ['兼职收入']={'兼职','稿费','副业'},
+  ['礼金收入']={'红包','礼金','压岁钱'},
+  ['其他收入']={'其他'},
+ }
+}
 local option_fields={expenseCategory='expenseCategories',incomeCategory='incomeCategories',paymentSource='paymentSources'}
 local option_icon_defaults={expenseCategory='tag',incomeCategory='coins',paymentSource='wallet'}
 local option_icons={'utensils','shopping-basket','bus-front','house','shopping-bag','gamepad','heart-pulse','graduation-cap','gift','circle-ellipsis','briefcase-business','award','chart','laptop','coins','message-circle','qr-code','credit-card','banknote','wallet','tag','paw-print','coffee','baby','smartphone','plane','bike','car','book-open','music','camera','sparkles','heart','shirt','wrench'}
 local function record_options(u)
- local out={icons={}}
+ local out={icons={},expenseSubcategories={},incomeSubcategories={},customExpenseSubcategories={},customIncomeSubcategories={}}
  for kind,field in pairs(option_fields) do
   local list,icons={},{}
   for _,name in ipairs(option_defaults[field]) do list[#list+1]=name end
@@ -213,10 +235,65 @@ local function record_options(u)
    if icons[entry.name] and contains(option_icons,entry.icon) then icons[entry.name]=entry.icon end
   end
   out[field]=array(list); out.icons[kind]=icons -- Empty mappings encode as {}, not [].
+  if field=='expenseCategories' or field=='incomeCategories' then
+   local subs,order={},{}
+   for _,major in ipairs(option_defaults[field]) do subs[major]={}; order[#order+1]=major end
+   for _,major in ipairs((u.customOptions or {})[field] or {}) do
+    if not subs[major] then subs[major]={}; order[#order+1]=major end
+   end
+   for _,major in ipairs(option_defaults[field]) do
+    for _,sub in ipairs(subcategory_defaults[field][major] or {}) do subs[major][#subs[major]+1]=sub end
+   end
+   for _,entry in ipairs((u.customSubcategories or {})[field] or {}) do
+    local list=subs[entry.parent]
+    if list and not contains(list,entry.name) then list[#list+1]=entry.name end
+   end
+   local map={}
+   for _,major in ipairs(order) do map[major]=array(subs[major]) end
+   out[field=='expenseCategories' and 'expenseSubcategories' or 'incomeSubcategories']=map
+   local custom_map={}
+   for _,entry in ipairs((u.customSubcategories or {})[field] or {}) do
+    local list=custom_map[entry.parent] or {}; list[#list+1]=entry.name; custom_map[entry.parent]=list
+   end
+   out[field=='expenseCategories' and 'customExpenseSubcategories' or 'customIncomeSubcategories']=custom_map
+  end
  end
  return out
 end
 local function record_option_create(t,u)
+ if t.kind=='expenseSubcategory' or t.kind=='incomeSubcategory' then
+  v.fields(t,{kind=true,parent=true,name=true})
+  local field=t.kind=='expenseSubcategory' and 'expenseCategories' or 'incomeCategories'
+  local parent=v.text(t.parent,'大分类',1,40,true)
+  local name=v.text(t.name,'小分类名称',1,40,true)
+  local majors={}
+  for _,item in ipairs(option_defaults[field]) do majors[#majors+1]=item end
+  for _,item in ipairs((u.customOptions or {})[field] or {}) do majors[#majors+1]=item end
+  if not contains(majors,parent) then v.bad('大分类不存在') end
+  if contains(subcategory_defaults[field][parent] or {},name) then conflict('该小分类已存在') end
+  for _,entry in ipairs((u.customSubcategories or {})[field] or {}) do
+   if entry.parent==parent and entry.name==name then conflict('该小分类已存在') end
+  end
+  local path='customSubcategories.'..field
+  local existing_count=0
+  for _,entry in ipairs((u.customSubcategories or {})[field] or {}) do
+   if entry.parent==parent then existing_count=existing_count+1 end
+  end
+  if existing_count>=50 then conflict('每个大分类最多添加50个小分类') end
+  -- Uniqueness is also checked atomically so concurrent additions cannot duplicate.
+  local filter={_id=u._id,authVersion=u.authVersion,[path]={['$not']={['$elemMatch']={parent=parent,name=name}}}}
+  local updated=db.modify('users',filter,{['$push']={[path]={parent=parent,name=name}}})
+  if not updated then
+   local current=db.one('users',{_id=u._id,authVersion=u.authVersion})
+   if not current then conflict('账户已更新，请重新登录') end
+   if contains(subcategory_defaults[field][parent] or {},name) then conflict('该小分类已存在') end
+   for _,entry in ipairs((current.customSubcategories or {})[field] or {}) do
+    if entry.parent==parent and entry.name==name then conflict('该小分类已存在') end
+   end
+   conflict('每个大分类最多添加50个小分类')
+  end
+  return record_options(updated),201
+ end
  v.fields(t,{kind=true,name=true,icon=true})
  local kind=v.enum(t.kind,'选项类型',{'expenseCategory','incomeCategory','paymentSource'})
  local name=v.text(t.name,'选项名称',1,40,true); local field=option_fields[kind]
@@ -236,6 +313,40 @@ local function record_option_create(t,u)
   conflict('每种最多添加50个自定义选项')
  end
  return record_options(updated),201
+end
+local function record_option_delete(t,u)
+ if t.kind=='expenseSubcategory' or t.kind=='incomeSubcategory' then
+  v.fields(t,{kind=true,parent=true,name=true})
+  local field=t.kind=='expenseSubcategory' and 'expenseCategories' or 'incomeCategories'
+  local parent=v.text(t.parent,'大分类',1,40,true)
+  local name=v.text(t.name,'小分类名称',1,40,true)
+  if contains(subcategory_defaults[field][parent] or {},name) then conflict('默认小分类不能删除') end
+  local path='customSubcategories.'..field
+  local filter={_id=u._id,authVersion=u.authVersion,[path]={['$elemMatch']={parent=parent,name=name}}}
+  local updated=db.modify('users',filter,{['$pull']={[path]={parent=parent,name=name}}})
+  if not updated then
+   local current=db.one('users',{_id=u._id,authVersion=u.authVersion})
+   if not current then conflict('账户已更新，请重新登录') end
+   missing()
+  end
+  return record_options(updated)
+ end
+ v.fields(t,{kind=true,name=true})
+ local kind=v.enum(t.kind,'选项类型',{'expenseCategory','incomeCategory','paymentSource'})
+ local name=v.text(t.name,'选项名称',1,40,true); local field=option_fields[kind]
+ if contains(option_defaults[field],name) then conflict('默认选项不能删除') end
+ local path='customOptions.'..field
+ local pull={[path]=name,['customOptionIcons.'..field]={name=name}}
+ if field=='expenseCategories' or field=='incomeCategories' then
+  pull['customSubcategories.'..field]={parent=name}
+ end
+ local updated=db.modify('users',{_id=u._id,authVersion=u.authVersion,[path]=name},{['$pull']=pull})
+ if not updated then
+  local current=db.one('users',{_id=u._id,authVersion=u.authVersion})
+  if not current then conflict('账户已更新，请重新登录') end
+  missing()
+ end
+ return record_options(updated)
 end
 local function books_available(u)
  local filter={deleting={['$ne']=true},['$or']=bson.array({{ownerId=u._id},{type='family',memberIds=u._id}})}
@@ -374,7 +485,8 @@ local function record_filter(id,args)
  local f={bookId=id}
  if args.type then f.type=v.enum(args.type,'收支类型',{'income','expense'}) end
  if args.createdBy then f.createdBy=v.id(args.createdBy) end
- if args.category then f.category=v.text(args.category,'分类',1,40,false) end
+ if args.category then f.category=v.text(args.category,'大分类',1,40,false) end
+ if args.subcategory then f.subcategory=v.text(args.subcategory,'小分类',1,40,false) end
  if args.from or args.to then
   local bounds={}; local a,b
   if args.from then a=date.parse(args.from); if not a then v.bad('from时间不正确') end; bounds['$gte']=date.iso(a) end
@@ -386,7 +498,7 @@ local function record_filter(id,args)
   local q=v.text(args.q,'搜索关键词',1,100,true)
   -- Literal regex only: user-controlled regex syntax is never executed.
   local escaped=q:gsub('([\\%.%+%-%*%?%[%]%^%$%(%)%{%}%|])','\\%1')
-  f['$or']=bson.array({{note={['$regex']=escaped,['$options']='i'}},{category={['$regex']=escaped,['$options']='i'}},{paymentSource={['$regex']=escaped,['$options']='i'}}})
+  f['$or']=bson.array({{note={['$regex']=escaped,['$options']='i'}},{category={['$regex']=escaped,['$options']='i'}},{subcategory={['$regex']=escaped,['$options']='i'}},{paymentSource={['$regex']=escaped,['$options']='i'}}})
  end
  return f
 end
@@ -397,7 +509,7 @@ local function page_value(s,default,max,name)
 end
 local function records_list(id,u)
  local b=book_view(id,u)
- local args=query({from=true,to=true,type=true,category=true,q=true,page=true,pageSize=true,createdBy=true})
+ local args=query({from=true,to=true,type=true,category=true,subcategory=true,q=true,page=true,pageSize=true,createdBy=true})
  local page=page_value(args.page,1,1000000,'页码'); local size=page_value(args.pageSize,20,100,'每页条数')
  local filter=record_filter(id,args)
  local list=db.find('records',filter,{sort=bson.ordered({{'occurredAt',-1},{'_id',-1}}),skip=(page-1)*size,limit=size})
@@ -499,6 +611,27 @@ local function record_mutate(id,rid,t,u,remove)
  local changed=db.modify('records',{_id=rid,bookId=id},{['$set']=updates}); if not changed then missing() end
  return record_out(changed)
 end
+local function add_expense(categories,r)
+ local c=categories[r.category] or {category=r.category,amountCents=0,count=0,subcategories={}}
+ c.amountCents=c.amountCents+r.amountCents; c.count=c.count+1
+ local sub=r.subcategory or ''
+ if sub~='' then
+  local item=c.subcategories[sub] or {name=sub,amountCents=0,count=0}
+  item.amountCents=item.amountCents+r.amountCents; item.count=item.count+1; c.subcategories[sub]=item
+ end
+ categories[r.category]=c
+end
+local function finish_categories(categories)
+ local out={}
+ for _,c in pairs(categories) do
+  local subs={}
+  for _,item in pairs(c.subcategories or {}) do subs[#subs+1]=item end
+  table.sort(subs,function(a,b) if a.amountCents==b.amountCents then return a.name<b.name end; return a.amountCents>b.amountCents end)
+  c.subcategories=array(subs); out[#out+1]=c
+ end
+ table.sort(out,function(a,b) if a.amountCents==b.amountCents then return a.category<b.category end; return a.amountCents>b.amountCents end)
+ return array(out)
+end
 local function analysis(id,u)
  local b=book_view(id,u); local args=query({period=true,date=true,member=true})
  local period=v.enum(args.period or 'month','分析周期',{'week','month','year'})
@@ -519,7 +652,7 @@ local function analysis(id,u)
    if result[key]+r.amountCents>9007199254740991 then v.error(422,'AMOUNT_OVERFLOW','统计金额超出安全范围') end
    result[key]=result[key]+r.amountCents; result.recordCount=result.recordCount+1
    local bucket=buckets[date.bucket(r.occurredAt,period)]; if bucket then bucket[key]=bucket[key]+r.amountCents end
-   if r.type=='expense' then local c=categories[r.category] or {category=r.category,amountCents=0,count=0}; c.amountCents=c.amountCents+r.amountCents; c.count=c.count+1; categories[r.category]=c end
+   if r.type=='expense' then add_expense(categories,r) end
   end
   -- Per-member totals are computed for the whole period even when filtered.
   local s=member_stats[r.createdBy]
@@ -531,9 +664,7 @@ local function analysis(id,u)
   s[key]=s[key]+r.amountCents; s.recordCount=s.recordCount+1
  end)
  result.balanceCents=result.incomeCents-result.expenseCents
- for _,c in pairs(categories) do result.categories[#result.categories+1]=c end
- table.sort(result.categories,function(a,b) if a.amountCents==b.amountCents then return a.category<b.category end; return a.amountCents>b.amountCents end)
- result.categories=array(result.categories)
+ result.categories=finish_categories(categories)
  local users=users_by_ids(member_order)
  local members={}
  for _,uid in ipairs(member_order) do
@@ -566,7 +697,7 @@ local function analysis_all(u)
    if result[key]+r.amountCents>9007199254740991 then v.error(422,'AMOUNT_OVERFLOW','统计金额超出安全范围') end
    result[key]=result[key]+r.amountCents; result.recordCount=result.recordCount+1
    local bucket=buckets[date.bucket(r.occurredAt,period)]; if bucket then bucket[key]=bucket[key]+r.amountCents end
-   if r.type=='expense' then local c=categories[r.category] or {category=r.category,amountCents=0,count=0}; c.amountCents=c.amountCents+r.amountCents; c.count=c.count+1; categories[r.category]=c end
+   if r.type=='expense' then add_expense(categories,r) end
    local s=book_stats[r.bookId]
    if s then
     if s[key]+r.amountCents>9007199254740991 then v.error(422,'AMOUNT_OVERFLOW','统计金额超出安全范围') end
@@ -575,9 +706,7 @@ local function analysis_all(u)
   end)
  end
  result.balanceCents=result.incomeCents-result.expenseCents
- for _,c in pairs(categories) do result.categories[#result.categories+1]=c end
- table.sort(result.categories,function(a,b) if a.amountCents==b.amountCents then return a.category<b.category end; return a.amountCents>b.amountCents end)
- result.categories=array(result.categories)
+ result.categories=finish_categories(categories)
  local books={}
  for _,bid in ipairs(book_order) do local s=book_stats[bid]; s.balanceCents=s.incomeCents-s.expenseCents; books[#books+1]=s end
  result.books=array(books)
@@ -616,6 +745,7 @@ function M.dispatch()
  if path=='/api/auth/phone' and method=='PATCH' then return phone_change(t,u) end
  if path=='/api/auth/settings' and method=='PATCH' then return settings_change(t,u) end
  if path=='/api/record-options' then if method=='GET' then return record_options(u) elseif method=='POST' then return record_option_create(t,u) end end
+ if path=='/api/record-options/delete' and method=='POST' then return record_option_delete(t,u) end
  if path=='/api/books' then if method=='GET' then return books_list(u) elseif method=='POST' then return book_create(t,u) end end
  if path=='/api/books/order' and method=='PATCH' then return books_order(t,u) end
  if path=='/api/invitations' and method=='GET' then return invitations_list(u) end

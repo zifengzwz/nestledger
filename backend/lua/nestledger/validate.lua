@@ -33,17 +33,18 @@ function M.fields(t,allowed)
  for k in pairs(t) do if type(k)~='string' or not allowed[k] then M.bad('请求含不支持的字段') end end
 end
 function M.record(t,partial)
- M.fields(t,{type=true,amountCents=true,category=true,occurredAt=true,note=true,paymentSource=true})
+ M.fields(t,{type=true,amountCents=true,category=true,subcategory=true,occurredAt=true,note=true,paymentSource=true})
  local out={}; local count=0
- for _,k in ipairs({'type','amountCents','category','occurredAt','note','paymentSource'}) do
+ for _,k in ipairs({'type','amountCents','category','subcategory','occurredAt','note','paymentSource'}) do
   local v=t[k]
   if v~=nil or not partial then
    if k=='type' then v=M.enum(v,'收支类型',{'income','expense'})
    elseif k=='amountCents' then v=M.integer(v,'金额（分）',1,99999999999)
    elseif k=='occurredAt' then local date=require 'nestledger.date'; local ts=date.parse(v); if not ts then M.bad('日期必须为有效ISO8601时间') end; v=date.iso(ts)
+   elseif k=='subcategory' then if v==nil then v='' end; v=M.text(v, '小分类',0,40,true)
    elseif k=='note' then if v==nil then v='' end; v=M.text(v, '备注',0,500,false)
    elseif k=='paymentSource' then if v==nil then v='' end; v=M.text(v, '支付方式',0,40,true)
-   else v=M.text(v,'分类',1,40,true) end
+   else v=M.text(v,'大分类',1,40,true) end
    out[k]=v; count=count+1
   end
  end

@@ -124,6 +124,7 @@ test("账本真实CSV/JSON下载、模板、校验预览和防重导入（含手
         type: "income",
         amountCents: 600000,
         category: "工资薪酬",
+        subcategory: "基本工资",
         occurredAt: "2026-11-17T00:01:02.345Z",
         note: "工资到账",
         paymentSource: "银行卡",
@@ -132,6 +133,7 @@ test("账本真实CSV/JSON下载、模板、校验预览和防重导入（含手
         type: "expense",
         amountCents: 12345,
         category: "交通出行",
+        subcategory: "地铁",
         occurredAt: "2026-11-17T01:22:33.456Z",
         note: '通勤,包含"引号"\n第二行',
         paymentSource: "银行卡",
@@ -140,6 +142,7 @@ test("账本真实CSV/JSON下载、模板、校验预览和防重导入（含手
         type: "expense",
         amountCents: 89,
         category: "购物消费",
+        subcategory: "服饰",
         occurredAt: "2026-11-17T02:00:00.000Z",
         note: "=1+2",
         paymentSource: "支付宝",
@@ -170,6 +173,8 @@ test("账本真实CSV/JSON下载、模板、校验预览和防重导入（含手
     const csv = await downloaded(page, modal, "下载 CSV");
     expect(csv.buffer.subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
     expect(csv.text).toContain("收支类型");
+    expect(csv.text).toContain("小分类");
+    expect(csv.text).toContain("基本工资");
     expect(csv.text).toContain("支付方式");
     expect(csv.text).toContain("123.45");
     expect(csv.text).toContain('包含""引号""');

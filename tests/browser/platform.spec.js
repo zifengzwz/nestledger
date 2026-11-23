@@ -50,7 +50,7 @@ async function record(page, { type = "expense", amount, category, note }) {
     .click();
   await modal.getByLabel("金额（元）", { exact: true }).fill(amount);
   await modal
-    .getByRole("combobox", { name: "分类", exact: true })
+    .getByRole("combobox", { name: "大分类", exact: true })
     .fill(category);
   await modal.getByPlaceholder("为这笔记录留下一点生活的细节").fill(note);
   await modal.getByRole("button", { name: "记好了", exact: true }).click();

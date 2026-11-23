@@ -24,6 +24,7 @@ const row: TransferRecord = {
   type: "expense",
   amountCents: 29,
   category: "餐饮美食",
+  subcategory: "咖啡",
   occurredAt: "2026-11-17T01:02:03.123Z",
   note: '咖啡, "好喝"\r\n第二行',
   paymentSource: "微信",
@@ -121,6 +122,7 @@ describe("strict calendar and export date range", () => {
             "支出",
             "1",
             "餐饮",
+            "",
             `2026-01-01T12:00:00${zone}`,
             "",
             "微信",
@@ -163,6 +165,7 @@ describe("CSV parsing and spreadsheet safety", () => {
     expect(parseCSV(text).records[0]).toMatchObject({
       type: "income",
       amountCents: 1230,
+      subcategory: "",
     });
   });
   it("downloads a valid template with previewable example", () =>
@@ -172,16 +175,16 @@ describe("CSV parsing and spreadsheet safety", () => {
     CSV_HEADERS.join(",").replace("支付方式", "分类") + "\n1",
     CSV_HEADERS.join(",").replace("支付方式", "未知") + "\n1",
     csvRow() + ",extra",
-    csvRow(["expense", "1", "餐饮", "2026-01-01 12:00", "", ""]),
-    csvRow(["支出", "1.234", "餐饮", "2026-01-01 12:00", "", ""]),
-    csvRow(["支出", "1", "餐饮", "2026-02-30 12:00", "", ""]),
+    csvRow(["expense", "1", "餐饮", "", "2026-01-01 12:00", "", ""]),
+    csvRow(["支出", "1.234", "餐饮", "", "2026-01-01 12:00", "", ""]),
+    csvRow(["支出", "1", "餐饮", "", "2026-02-30 12:00", "", ""]),
     csvRow().replace("备注", '"未闭合'),
     csvRow().replace("备注", 'a"b'),
     csvRow().replace("备注", '"a"b'),
   ])("rejects malformed CSV", (text) => expect(() => parseCSV(text)).toThrow());
   it("includes the offending row number", () =>
     expect(() =>
-      parseCSV(csvRow(["支出", "1e3", "餐饮", "2026-01-01 12:00", "", ""])),
+      parseCSV(csvRow(["支出", "1e3", "餐饮", "", "2026-01-01 12:00", "", ""])),
     ).toThrow("第2行"));
   it.each([
     "=SUM(A1:A2)",
@@ -234,8 +237,13 @@ describe("JSON schema, whitelist and size caps", () => {
       expect(() => parseCSV(recordsCSV([malicious]))).toThrow("不能含NUL字符");
     },
   );
-  it("preserves the six original fields, tolerates metadata and treats source book as information", () => {
+  it("preserves the original fields, tolerates legacy records without a subcategory and treats source book as information", () => {
     expect(parseJSONBackup(backup()).records).toEqual([row]);
+    const legacyRow = { ...row } as Record<string, unknown>;
+    delete legacyRow.subcategory;
+    expect(parseJSONBackup(backup([legacyRow])).records[0]!.subcategory).toBe(
+      "",
+    );
     expect(parseJSONBackup(backup()).sourceBook).toContain("旧账本");
   });
   it.each([
@@ -253,6 +261,8 @@ describe("JSON schema, whitelist and size caps", () => {
     backup([{ ...row, category: "" }]),
     backup([{ ...row, note: "x".repeat(501) }]),
     backup([{ ...row, category: "x".repeat(41) }]),
+    backup([{ ...row, subcategory: 1 }]),
+    backup([{ ...row, subcategory: "x".repeat(41) }]),
     backup([{ ...row, paymentSource: null }]),
     backup([{ ...row, occurredAt: "2026-02-30T00:00:00Z" }]),
     backup([{ ...row, occurredAt: "2026-01-01 12:00" }]),

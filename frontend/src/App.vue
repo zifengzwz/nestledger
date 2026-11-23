@@ -20,6 +20,7 @@ import {
   Search,
   Settings,
   Share2,
+  Tags,
   Trash2,
   TrendingUp,
   Users,
@@ -54,14 +55,14 @@ import Modal from "./components/Modal.vue";
 import TrendChart from "./components/TrendChart.vue";
 import SelectInput from "./components/SelectInput.vue";
 import OptionIcon from "./components/OptionIcon.vue";
-import IconPicker from "./components/IconPicker.vue";
 import { useSmsCode } from "./useSmsCode";
 import ThemePicker from "./components/ThemePicker.vue";
 import { applyTheme, readStoredTheme, storeTheme, type ThemeId } from "./theme";
-import { iconById, type OptionIconKind } from "./optionIcons";
+import { type OptionIconKind } from "./optionIcons";
 import BookSwitcher from "./components/BookSwitcher.vue";
 import DataTransfer from "./components/DataTransfer.vue";
 import ShareBookDialog from "./components/ShareBookDialog.vue";
+import OptionManager from "./components/OptionManager.vue";
 const shareDialogBookId = ref("");
 const transferMode = ref<"" | "import" | "export">("");
 async function importedRecords(id: string, count: number) {
@@ -118,6 +119,7 @@ const records = ref<RecordPage>({ items: [], total: 0, page: 1, pageSize: 20 }),
   analysis = ref<Analysis | null>(null),
   authors = ref<RecordAuthor[]>([]),
   memberFilter = ref(""),
+  lastRecordedDay = ref(""),
   analysisScope = ref<"book" | "all">("book");
 const loadingRecords = ref(false),
   loadingAnalysis = ref(false),
@@ -126,7 +128,14 @@ const loadingRecords = ref(false),
 const period = ref("month"),
   analysisDate = ref(shanghaiDay()),
   page = ref(1);
-const filter = ref({ type: "", category: "", q: "", from: "", to: "" }),
+const filter = ref({
+    type: "",
+    category: "",
+    subcategory: "",
+    q: "",
+    from: "",
+    to: "",
+  }),
   appliedFilter = ref({ ...filter.value });
 const members = ref<User[]>([]),
   membersLoading = ref(false),
@@ -140,10 +149,12 @@ const recordForm = ref({
   type: "expense",
   amount: "",
   category: "餐饮美食",
+  subcategory: "",
   occurredAt: shanghaiDay(),
   note: "",
   paymentSource: "微信",
 });
+
 const formError = ref(""),
   confirmation = ref({
     title: "",
@@ -222,15 +233,53 @@ const recordOptions = ref<RecordOptions>({
   expenseCategories: [],
   incomeCategories: [],
   paymentSources: [],
+  expenseSubcategories: {},
+  incomeSubcategories: {},
+  customExpenseSubcategories: {},
+  customIncomeSubcategories: {},
 });
 const paymentSources = computed(() => recordOptions.value.paymentSources);
+function subcategoryListFor(category: string, type: string) {
+  const map =
+    type === "income"
+      ? recordOptions.value.incomeSubcategories
+      : recordOptions.value.expenseSubcategories;
+  return map &&
+    Object.prototype.hasOwnProperty.call(map, category) &&
+    Array.isArray(map[category])
+    ? map[category]
+    : [];
+}
+const subcategoryOptions = computed(() =>
+  subcategoryListFor(recordForm.value.category, recordForm.value.type),
+);
+watch(subcategoryOptions, (options) => {
+  if (!recordForm.value.subcategory && options.length)
+    recordForm.value.subcategory = options[0];
+});
+
+const filterSubcategoryOptions = computed(() => {
+  const maps = [
+    recordOptions.value.expenseSubcategories,
+    recordOptions.value.incomeSubcategories,
+  ];
+  const category = filter.value.category.trim();
+  const names = new Set<string>();
+  for (const map of maps) {
+    if (!map) continue;
+    if (category) {
+      if (Object.prototype.hasOwnProperty.call(map, category))
+        for (const name of map[category] ?? []) names.add(name);
+    } else {
+      for (const list of Object.values(map))
+        for (const name of list) names.add(name);
+    }
+  }
+  return [...names].sort((a, b) => a.localeCompare(b, "zh-CN"));
+});
 const expenseCategories = computed(() => recordOptions.value.expenseCategories);
 const incomeCategories = computed(() => recordOptions.value.incomeCategories);
-const addingOption = ref<{
-  kind: RecordOptionKind;
-  name: string;
-  icon: string;
-} | null>(null);
+
 function recordIcon(kind: OptionIconKind, name: string) {
   const key: RecordOptionKind =
     kind === "payment"
@@ -244,13 +293,7 @@ function recordIcon(kind: OptionIconKind, name: string) {
     ? mapping[value]
     : undefined;
 }
-const addingOptionLabel = computed(() =>
-  addingOption.value?.kind === "paymentSource"
-    ? "支付方式"
-    : addingOption.value?.kind === "incomeCategory"
-      ? "收入分类"
-      : "支出分类",
-);
+
 let optionsRequest = 0;
 const optionsLoading = ref(false);
 function clearRecordOptions() {
@@ -260,8 +303,11 @@ function clearRecordOptions() {
     expenseCategories: [],
     incomeCategories: [],
     paymentSources: [],
+    expenseSubcategories: {},
+    incomeSubcategories: {},
+    customExpenseSubcategories: {},
+    customIncomeSubcategories: {},
   };
-  addingOption.value = null;
 }
 async function loadRecordOptions() {
   const sequence = ++optionsRequest;
@@ -288,51 +334,17 @@ async function loadRecordOptions() {
     if (sequence === optionsRequest) optionsLoading.value = false;
   }
 }
-async function openAddOption(kind: RecordOptionKind, suggestedName: string) {
-  if (busy.value || optionsLoading.value) return;
-  formError.value = "";
-  addingOption.value = {
-    kind,
-    name: suggestedName,
-    icon:
-      kind === "paymentSource"
-        ? "wallet"
-        : kind === "incomeCategory"
-          ? "coins"
-          : "tag",
-  };
-  await nextTick();
-  document.getElementById("custom-option-name")?.focus();
+function setRecordCategory(value: string) {
+  if (value === recordForm.value.category) return;
+  recordForm.value.category = value;
+  recordForm.value.subcategory =
+    subcategoryListFor(value, recordForm.value.type)[0] ?? "";
 }
-function submitCustomOption(event: KeyboardEvent) {
-  if (event.isComposing) return;
-  event.preventDefault();
-  void saveCustomOption();
-}
-async function saveCustomOption() {
-  const entry = addingOption.value;
-  if (!entry || busy.value) return;
-  await mutate(async () => {
-    const name = entry.name.trim();
-    if (!name || Array.from(name).length > 40)
-      throw new Error("名称需为1–40个字符");
-    if (!iconById(entry.icon)) throw new Error("请选择有效图标");
-    ++optionsRequest; // Discard an older GET that could otherwise overwrite the added option.
-    recordOptions.value = await api<RecordOptions>("/record-options", "POST", {
-      kind: entry.kind,
-      name,
-      icon: entry.icon,
-    });
-    if (entry.kind === "paymentSource") recordForm.value.paymentSource = name;
-    else if (
-      (entry.kind === "expenseCategory" &&
-        recordForm.value.type === "expense") ||
-      (entry.kind === "incomeCategory" && recordForm.value.type === "income")
-    )
-      recordForm.value.category = name;
-    addingOption.value = null;
-    toast("已添加到你的常用选项，下次记账可直接选择");
-  });
+function setRecordType(type: string) {
+  recordForm.value.type = type;
+  recordForm.value.category = type === "income" ? "工资薪酬" : "餐饮美食";
+  recordForm.value.subcategory =
+    subcategoryListFor(recordForm.value.category, type)[0] ?? "";
 }
 function toast(message: string, error = false) {
   const id = ++toastId;
@@ -491,7 +503,7 @@ async function loadRecords() {
       page: String(page.value),
       pageSize: "20",
     });
-    for (const key of ["type", "category", "q"] as const)
+    for (const key of ["type", "category", "subcategory", "q"] as const)
       if (f[key]) params.set(key, f[key]);
     if (f.from) params.set("from", isoShanghai(f.from));
     if (f.to) params.set("to", nextDayISO(f.to));
@@ -500,6 +512,15 @@ async function loadRecords() {
     if (sequence === recordRequest) {
       records.value = result;
       authors.value = result.authors ?? [];
+      if (
+        !lastRecordedDay.value &&
+        page.value === 1 &&
+        !Object.values(appliedFilter.value).some(Boolean) &&
+        result.items[0]
+      )
+        lastRecordedDay.value = shanghaiDay(
+          new Date(result.items[0].occurredAt),
+        );
     }
   } catch (error) {
     if (sequence === recordRequest) recordsError.value = failure(error);
@@ -586,6 +607,8 @@ function navigate(target: string) {
     void loadAnalysis();
   }
   if (target === "members") void loadMembers();
+  if (target === "options")
+    void loadRecordOptions().catch((e) => toast(failure(e), true));
   if (target === "invitations")
     void refreshInbox().catch((e) => toast(failure(e), true));
 }
@@ -596,6 +619,7 @@ watch(bookId, () => {
   members.value = [];
   authors.value = [];
   memberFilter.value = "";
+  lastRecordedDay.value = "";
   analysisScope.value = "book";
   analysis.value = null;
   records.value = { items: [], total: 0, page: 1, pageSize: 20 };
@@ -621,7 +645,14 @@ function applyFilters() {
   else page.value = 1;
 }
 function resetFilters() {
-  filter.value = { type: "", category: "", q: "", from: "", to: "" };
+  filter.value = {
+    type: "",
+    category: "",
+    subcategory: "",
+    q: "",
+    from: "",
+    to: "",
+  };
   applyFilters();
 }
 function newBook(edit = false) {
@@ -648,9 +679,11 @@ async function saveBook() {
     toast(bookEditing.value ? "账本名称已更新" : "新账本创建成功");
   });
 }
+function defaultRecordDay() {
+  return lastRecordedDay.value || shanghaiDay();
+}
 function openRecord(record?: LedgerRecord) {
   if (readOnlyBook.value) return;
-  addingOption.value = null;
   void loadRecordOptions().catch((error) => toast(failure(error), true));
   editingRecord.value = record || null;
   recordForm.value = record
@@ -658,6 +691,10 @@ function openRecord(record?: LedgerRecord) {
         type: record.type,
         amount: (record.amountCents / 100).toFixed(2),
         category: record.category,
+        subcategory:
+          record.subcategory ||
+          subcategoryListFor(record.category, record.type)[0] ||
+          "",
         occurredAt: shanghaiDay(new Date(record.occurredAt)),
         note: record.note,
         paymentSource: record.paymentSource,
@@ -666,7 +703,8 @@ function openRecord(record?: LedgerRecord) {
         type: "expense",
         amount: "",
         category: "餐饮美食",
-        occurredAt: shanghaiDay(),
+        subcategory: subcategoryListFor("餐饮美食", "expense")[0] || "",
+        occurredAt: defaultRecordDay(),
         note: "",
         paymentSource: "微信",
       };
@@ -675,8 +713,8 @@ function openRecord(record?: LedgerRecord) {
 }
 async function saveRecord() {
   if (readOnlyBook.value) return;
-  if (addingOption.value) {
-    formError.value = "请先完成或取消添加选项";
+  if (!recordForm.value.subcategory.trim()) {
+    formError.value = "请选择或添加小分类";
     return;
   }
   await mutate(async () => {
@@ -696,11 +734,13 @@ async function saveRecord() {
         type: data.type,
         amountCents: data.amountCents,
         category: data.category.trim(),
+        subcategory: data.subcategory.trim(),
         occurredAt: data.occurredAt,
         note: data.note.trim(),
         paymentSource: data.paymentSource.trim(),
       },
     );
+    lastRecordedDay.value = day;
     modal.value = "";
     toast(editingRecord.value ? "记录已更新" : "这一笔，记好了");
     await Promise.all([loadRecords(), loadAnalysis()]);
@@ -726,7 +766,7 @@ async function performConfirmation() {
 function removeRecord(record: LedgerRecord) {
   confirm(
     "删除这笔记录？",
-    `${record.category} · ¥${money(record.amountCents)}。删除后无法恢复。`,
+    `${record.category}${record.subcategory ? " / " + record.subcategory : ""} · ¥${money(record.amountCents)}。删除后无法恢复。`,
     async () => {
       await api(`/books/${bookId.value}/records/${record.id}`, "DELETE");
       if (records.value.items.length === 1 && page.value > 1) page.value--;
@@ -1065,6 +1105,11 @@ onMounted(initialize);
         >
           <Users :size="19" /> 账本管理</button
         ><button
+          :class="{ active: view === 'options' }"
+          @click="navigate('options')"
+        >
+          <Tags :size="19" /> 分类与支付方式</button
+        ><button
           :class="{ active: view === 'invitations' }"
           title="账号收到的家庭邀请和账本分享，与当前选择的账本无关"
           @click="navigate('invitations')"
@@ -1108,6 +1153,7 @@ onMounted(initialize);
               records: "收支明细",
               analysis: "收支分析",
               members: "账本管理",
+              options: "分类与支付方式",
               invitations: "我的邀请",
               account: "账户与安全",
             }[view as "overview"]
@@ -1415,7 +1461,7 @@ onMounted(initialize);
                     <div class="section-head">
                       <div>
                         <h2>钱都花在哪里</h2>
-                        <p>支出分类 · 共 {{ analysis.categories.length }} 类</p>
+                        <p>支出大分类 · 共 {{ analysis.categories.length }} 类</p>
                       </div>
                       <CreditCard :size="20" class="muted" />
                     </div>
@@ -1461,6 +1507,16 @@ onMounted(initialize);
                               ][i % 5],
                             }"
                           ></span>
+                        </div>
+                        <div
+                          v-if="c.subcategories?.length"
+                          class="subcategory-list"
+                        >
+                          <span
+                            v-for="sub in c.subcategories"
+                            :key="sub.name"
+                            >{{ sub.name }} ¥{{ money(sub.amountCents) }}</span
+                          >
                         </div>
                         <small
                           >{{ c.count }} 笔 ·
@@ -1630,7 +1686,7 @@ onMounted(initialize);
                   ><Search :size="17" /><input
                     v-model="filter.q"
                     aria-label="搜索记录"
-                    placeholder="搜索分类、备注、支付方式"
+                    placeholder="搜索大分类、小分类、备注、支付方式"
                     maxlength="100" /></label
                 ><label
                   ><span>收支类型</span
@@ -1640,10 +1696,10 @@ onMounted(initialize);
                     <option value="income">收入</option>
                   </select></label
                 ><label
-                  ><span>分类</span
+                  ><span>大分类</span
                   ><input
                     v-model="filter.category"
-                    placeholder="全部分类"
+                    placeholder="全部大分类"
                     list="filter-categories"
                     maxlength="40"
                   /><datalist id="filter-categories">
@@ -1655,12 +1711,27 @@ onMounted(initialize);
                     </option>
                   </datalist></label
                 ><label
+                  ><span>小分类</span
+                  ><input
+                    v-model="filter.subcategory"
+                    placeholder="全部小分类"
+                    list="filter-subcategories"
+                    maxlength="40"
+                  /><datalist id="filter-subcategories">
+                    <option
+                      v-for="sub in filterSubcategoryOptions"
+                      :key="sub"
+                    >
+                      {{ sub }}
+                    </option>
+                  </datalist></label
+                ><label
                   ><span>开始日期</span
                   ><input
                     v-model="filter.from"
                     type="date"
                     aria-label="开始日期" /></label
-                ><label
+                ><label class="filter-end"
                   ><span>结束日期</span
                   ><input
                     v-model="filter.to"
@@ -1704,7 +1775,7 @@ onMounted(initialize);
                 <table class="records-table">
                   <thead>
                     <tr>
-                      <th>分类 / 备注</th>
+                      <th>分类/备注</th>
                       <th v-if="isFamilyBook">记录人</th>
                       <th>时间（北京）</th>
                       <th>支付方式</th>
@@ -1728,7 +1799,11 @@ onMounted(initialize);
                               :icon="recordIcon(record.type, record.category)"
                               :size="18" /></span
                           ><span
-                            ><strong>{{ record.category }}</strong
+                            ><strong
+                              >{{ record.category
+                              }}<template v-if="record.subcategory">
+                                · {{ record.subcategory }}</template
+                              ></strong
                             ><small>{{
                               record.note ||
                               (record.type === "income" ? "收入" : "支出")
@@ -2018,6 +2093,30 @@ onMounted(initialize);
             </section></template
           ></template
         >
+        <template v-else-if="view === 'options'"
+          ><div class="page-heading">
+            <div>
+              <span class="eyebrow">A TIDY LEDGER STARTS HERE</span>
+              <h1>分类与支付方式</h1>
+              <p>集中管理大分类、小分类和支付方式，记账时直接选择。</p>
+            </div>
+            <button
+              class="secondary"
+              :disabled="busy || optionsLoading"
+              @click="mutate(loadRecordOptions)"
+            >
+              刷新
+            </button>
+          </div>
+          <div v-if="optionsLoading" class="loading-panel">
+            <span class="spinner" /> 正在加载分类与支付方式…
+          </div>
+          <OptionManager
+            v-else
+            :options="recordOptions"
+            @changed="recordOptions = $event"
+          />
+        </template>
         <template v-else-if="view === 'invitations'"
           ><div class="page-heading">
             <div>
@@ -2330,21 +2429,15 @@ onMounted(initialize);
         <button
           type="button"
           :class="{ active: recordForm.type === 'expense' }"
-          :disabled="busy || !!addingOption"
-          @click="
-            recordForm.type = 'expense';
-            recordForm.category = '餐饮美食';
-          "
+          :disabled="busy"
+          @click="setRecordType('expense')"
         >
           <ArrowUpRight :size="17" /> 支出</button
         ><button
           type="button"
           :class="{ active: recordForm.type === 'income' }"
-          :disabled="busy || !!addingOption"
-          @click="
-            recordForm.type = 'income';
-            recordForm.category = '工资薪酬';
-          "
+          :disabled="busy"
+          @click="setRecordType('income')"
         >
           <ArrowDownLeft :size="17" /> 收入
         </button>
@@ -2365,8 +2458,8 @@ onMounted(initialize);
       ></label>
       <div class="form-grid">
         <SelectInput
-          v-model="recordForm.category"
-          label="分类"
+          :model-value="recordForm.category"
+          label="大分类"
           :icon-kind="recordForm.type === 'income' ? 'income' : 'expense'"
           :icon-overrides="
             recordOptions.icons?.[
@@ -2378,17 +2471,16 @@ onMounted(initialize);
           :options="
             recordForm.type === 'expense' ? expenseCategories : incomeCategories
           "
-          placeholder="选择或输入分类"
-          allow-add
+          placeholder="选择或输入大分类"
           :disabled="busy || optionsLoading"
-          @add="
-            openAddOption(
-              recordForm.type === 'expense'
-                ? 'expenseCategory'
-                : 'incomeCategory',
-              $event,
-            )
-          "
+          @update:model-value="setRecordCategory"
+        />
+        <SelectInput
+          v-model="recordForm.subcategory"
+          label="小分类"
+          :options="subcategoryOptions"
+          placeholder="请选择或添加小分类"
+          :disabled="busy || optionsLoading || !recordForm.category"
         />
         <SelectInput
           v-model="recordForm.paymentSource"
@@ -2397,72 +2489,19 @@ onMounted(initialize);
           :icon-overrides="recordOptions.icons?.paymentSource"
           :options="paymentSources"
           placeholder="选择或输入支付方式"
-          allow-add
           :disabled="busy || optionsLoading"
-          @add="openAddOption('paymentSource', $event)"
         />
+        <label
+          >时间<input
+            v-model="recordForm.occurredAt"
+            type="date"
+            required
+        /></label>
       </div>
       <p v-if="optionsLoading" class="tiny muted">
-        正在加载你的常用分类和支付方式…
+        正在加载你的常用大分类、小分类和支付方式…
       </p>
-      <div
-        v-if="addingOption"
-        class="custom-option-editor"
-        role="group"
-        :aria-label="`添加${addingOptionLabel}`"
-      >
-        <h3>添加{{ addingOptionLabel }}</h3>
-        <p class="tiny muted">
-          保存到你的账号，下次记账可直接选择；每种最多添加50个。
-        </p>
-        <label :for="'custom-option-name'">{{
-          addingOption.kind === "paymentSource"
-            ? "新支付方式名称"
-            : "新分类名称"
-        }}</label>
-        <input
-          id="custom-option-name"
-          v-model="addingOption.name"
-          maxlength="40"
-          :disabled="busy"
-          :placeholder="
-            addingOption.kind === 'paymentSource'
-              ? '例如：家庭备用金'
-              : '例如：宠物开销'
-          "
-          @input="formError = ''"
-          @keydown.enter="submitCustomOption"
-        />
-        <IconPicker v-model="addingOption.icon" :disabled="busy" />
-        <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
-        <div class="button-row">
-          <button
-            type="button"
-            class="secondary"
-            :disabled="busy"
-            @click="
-              addingOption = null;
-              formError = '';
-            "
-          >
-            取消添加
-          </button>
-          <button
-            type="button"
-            class="primary"
-            :disabled="busy || !addingOption.name.trim()"
-            @click="saveCustomOption"
-          >
-            {{ busy ? "正在保存…" : "保存选项" }}
-          </button>
-        </div>
-      </div>
       <label
-        >发生日期（北京时间）<input
-          v-model="recordForm.occurredAt"
-          type="date"
-          required /></label
-      ><label
         >备注
         <span class="muted tiny">选填 · {{ recordForm.note.length }}/500</span
         ><textarea
@@ -2472,7 +2511,11 @@ onMounted(initialize);
           rows="3"
         ></textarea>
       </label>
-      <p v-if="formError && !addingOption" class="form-error" role="alert">
+      <p
+        v-if="formError"
+        class="form-error"
+        role="alert"
+      >
         {{ formError }}
       </p>
       <div class="modal-actions">
@@ -2483,7 +2526,10 @@ onMounted(initialize);
           @click="modal = ''"
         >
           取消</button
-        ><button class="primary" :disabled="busy || !!addingOption">
+        ><button
+          class="primary"
+          :disabled="busy"
+        >
           {{ busy ? "正在保存…" : editingRecord ? "保存修改" : "记好了" }}
         </button>
       </div>

@@ -8,7 +8,7 @@ local crypto=require 'nestledger.crypto'
 local date=require 'nestledger.date'
 local digest=require 'resty.openssl.digest'
 local M={}
-local fields={'type','amountCents','category','occurredAt','note','paymentSource'}
+local fields={'type','amountCents','category','subcategory','occurredAt','note','paymentSource'}
 local function now() return date.iso(ngx.now()) end
 local function hash(text)
  local d=assert(digest.new('sha256')); assert(d:update(text)); return crypto.hex(assert(d:final()))
@@ -18,7 +18,11 @@ local function tuple(r)
  local out={}; for _,field in ipairs(fields) do out[#out+1]=r[field] end; return out
 end
 local function backup_record(r)
- local out={}; for _,field in ipairs(fields) do out[field]=r[field] end; return out
+ local out={}
+ for _,field in ipairs(fields) do
+  out[field]=field=='subcategory' and (r.subcategory or '') or r[field]
+ end
+ return out
 end
 function M.export(book,args)
  local filter={bookId=book._id}

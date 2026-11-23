@@ -4,14 +4,19 @@ export const CSV_HEADERS = [
   "收支类型",
   "金额（元）",
   "分类",
+  "小分类",
   "时间",
   "备注",
   "支付方式",
 ] as const;
+export const LEGACY_CSV_HEADERS = CSV_HEADERS.filter(
+  (header) => header !== "小分类",
+);
 export interface TransferRecord {
   type: "income" | "expense";
   amountCents: number;
   category: string;
+  subcategory: string;
   occurredAt: string;
   note: string;
   paymentSource: string;
@@ -32,10 +37,12 @@ const FIELDS = [
   "type",
   "amountCents",
   "category",
+  "subcategory",
   "occurredAt",
   "note",
   "paymentSource",
 ];
+const LEGACY_FIELDS = FIELDS.filter((field) => field !== "subcategory");
 const dangerous = /^[\s]*[=+\-@\t\r\n]|^[\t\r\n]/;
 export function safeCSVText(value: string): string {
   return dangerous.test(value) ? "'" + value : value;
@@ -157,11 +164,11 @@ export function validateRecord(value: unknown): TransferRecord {
     throw new Error("记录必须为对象");
   const row = value as Record<string, unknown>;
   if (
-    Object.keys(row).length !== FIELDS.length ||
-    Object.keys(row).some((key) => !FIELDS.includes(key))
+    Object.keys(row).some((key) => !FIELDS.includes(key)) ||
+    LEGACY_FIELDS.some((key) => !(key in row))
   )
     throw new Error(
-      "记录仅允许type、amountCents、category、occurredAt、note、paymentSource六个字段",
+      "记录仅允许type、amountCents、category、subcategory、occurredAt、note、paymentSource字段，其中subcategory选填",
     );
   if (row.type !== "income" && row.type !== "expense")
     throw new Error("收支类型需为收入/支出（income/expense）");
@@ -178,6 +185,10 @@ export function validateRecord(value: unknown): TransferRecord {
     type: row.type,
     amountCents: row.amountCents,
     category: textField(row.category, "分类", 1, 40),
+    subcategory:
+      row.subcategory == null
+        ? ""
+        : textField(row.subcategory, "小分类", 0, 40),
     occurredAt: row.occurredAt,
     note: textField(row.note, "备注", 0, 500),
     paymentSource: textField(row.paymentSource, "支付方式", 0, 40),
@@ -294,22 +305,37 @@ export function parseCSVRows(text: string): CSVRow[] {
 export function parseCSV(text: string): ParsedImport {
   const rows = parseCSVRows(text);
   const headers = rows.shift()?.cells;
+  const isCurrent =
+    headers &&
+    headers.length === CSV_HEADERS.length &&
+    headers.every((header) =>
+      CSV_HEADERS.includes(header as (typeof CSV_HEADERS)[number]),
+    );
+  const isLegacy =
+    headers &&
+    headers.length === LEGACY_CSV_HEADERS.length &&
+    headers.every((header) =>
+      LEGACY_CSV_HEADERS.includes(
+        header as (typeof LEGACY_CSV_HEADERS)[number],
+      ),
+    );
   if (
     !headers ||
-    headers.length !== CSV_HEADERS.length ||
-    new Set(headers).size !== headers.length ||
-    headers.some(
-      (header) => !CSV_HEADERS.includes(header as (typeof CSV_HEADERS)[number]),
-    )
+    !(isCurrent || isLegacy) ||
+    new Set(headers).size !== headers.length
   )
-    throw new Error(`CSV表头必须为且仅为：${CSV_HEADERS.join(",")}`);
+    throw new Error(
+      `CSV表头必须为：${CSV_HEADERS.join(",")}（也兼容旧版无「小分类」的表头）`,
+    );
   checkRecordCount(rows);
   const records = rows.map((row) => {
     try {
       if (row.cells.length !== headers.length)
         throw new Error(`应有${headers.length}列，实际${row.cells.length}列`);
-      const field = (name: (typeof CSV_HEADERS)[number]) =>
-        row.cells[headers.indexOf(name)]!;
+      const field = (name: (typeof CSV_HEADERS)[number]) => {
+        const index = headers.indexOf(name);
+        return index >= 0 ? row.cells[index]! : "";
+      };
       const type = field("收支类型");
       if (type !== "收入" && type !== "支出")
         throw new Error("收支类型仅允许收入或支出");
@@ -317,6 +343,7 @@ export function parseCSV(text: string): ParsedImport {
         type: type === "收入" ? "income" : "expense",
         amountCents: parseMoney(field("金额（元）")),
         category: restoreCSVText(field("分类")),
+        subcategory: restoreCSVText(field("小分类")),
         occurredAt: strictDate(field("时间")),
         note: restoreCSVText(field("备注")),
         paymentSource: restoreCSVText(field("支付方式")),
@@ -338,6 +365,7 @@ export function recordsCSV(records: TransferRecord[]): string {
           row.type === "income" ? "收入" : "支出",
           centsDecimal(row.amountCents),
           safeCSVText(row.category),
+          safeCSVText(row.subcategory),
           row.occurredAt,
           safeCSVText(row.note),
           safeCSVText(row.paymentSource),
@@ -355,6 +383,7 @@ export function templateCSV(): string {
       type: "expense",
       amountCents: 1250,
       category: "餐饮美食",
+      subcategory: "早餐",
       occurredAt: "2026-01-01T04:00:00.000Z",
       note: "示例记录：导入前请修改或删除",
       paymentSource: "微信",

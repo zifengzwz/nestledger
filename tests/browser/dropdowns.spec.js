@@ -38,9 +38,9 @@ for (const viewport of [
         [activate]();
       modal = page.getByRole("dialog");
       await modal.getByLabel("金额（元）", { exact: true }).fill("12.50");
-      await modal.getByRole("button", { name: "展开分类选项" })[activate]();
+      await modal.getByRole("button", { name: "展开大分类选项" })[activate]();
       await expect(
-        modal.getByRole("listbox", { name: "分类选项" }).getByRole("option"),
+        modal.getByRole("listbox", { name: "大分类选项" }).getByRole("option"),
       ).toHaveCount(10);
       await expect(
         modal
@@ -56,7 +56,7 @@ for (const viewport of [
         .getByRole("option", { name: "交通出行", exact: true })
         [activate]();
       await expect(
-        modal.getByRole("combobox", { name: "分类", exact: true }),
+        modal.getByRole("combobox", { name: "大分类", exact: true }),
       ).toHaveValue("交通出行");
       await modal.getByRole("button", { name: "展开支付方式选项" })[activate]();
       await expect(
@@ -101,9 +101,9 @@ for (const viewport of [
       await modal
         .getByRole("button", { name: "收入", exact: true })
         [activate]();
-      await modal.getByRole("button", { name: "展开分类选项" })[activate]();
+      await modal.getByRole("button", { name: "展开大分类选项" })[activate]();
       await expect(
-        modal.getByRole("listbox", { name: "分类选项" }).getByRole("option"),
+        modal.getByRole("listbox", { name: "大分类选项" }).getByRole("option"),
       ).toHaveCount(6);
       await expect(
         modal.getByRole("option", { name: "交通出行", exact: true }),
@@ -136,15 +136,15 @@ for (const viewport of [
       await page
         .getByRole("button", { name: "编辑奖金收入记录", exact: true })
         [activate]();
-      await modal.getByRole("combobox", { name: "分类", exact: true }).focus();
+      await modal.getByRole("combobox", { name: "大分类", exact: true }).focus();
       await modal
-        .getByRole("combobox", { name: "分类", exact: true })
+        .getByRole("combobox", { name: "大分类", exact: true })
         .press("ArrowDown");
       await modal
-        .getByRole("combobox", { name: "分类", exact: true })
+        .getByRole("combobox", { name: "大分类", exact: true })
         .press("ArrowDown");
       await modal
-        .getByRole("combobox", { name: "分类", exact: true })
+        .getByRole("combobox", { name: "大分类", exact: true })
         .press("Enter");
       await expect(modal).toBeVisible();
       await modal.getByRole("button", { name: "展开支付方式选项" })[activate]();
